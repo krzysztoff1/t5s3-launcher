@@ -265,26 +265,30 @@ def console(text: str | None, wait: float, stop: str | None = None,
     """
     port = port or console_port()
     out: list[str] = []
-    with serial.Serial(port, CONSOLE_BAUD, timeout=0.2) as s:
-        if text is not None:
-            time.sleep(0.3)
-            s.write(("\n" + text + "\n").encode())
-            s.flush()
-        deadline = time.monotonic() + wait
-        buf = b""
-        while time.monotonic() < deadline:
-            chunk = s.read(512)
-            if not chunk:
-                continue
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                decoded = line.decode(errors="replace").rstrip("\r")
-                out.append(decoded)
-                if not quiet:
-                    print(decoded, flush=True)
-                if stop and stop in decoded:
-                    return "\n".join(out)
+    try:
+        with serial.Serial(port, CONSOLE_BAUD, timeout=0.2) as s:
+            if text is not None:
+                time.sleep(0.3)
+                s.write(("\n" + text + "\n").encode())
+                s.flush()
+            deadline = time.monotonic() + wait
+            buf = b""
+            while time.monotonic() < deadline:
+                chunk = s.read(512)
+                if not chunk:
+                    continue
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    decoded = line.decode(errors="replace").rstrip("\r")
+                    out.append(decoded)
+                    if not quiet:
+                        print(decoded, flush=True)
+                    if stop and stop in decoded:
+                        return "\n".join(out)
+    except (serial.SerialException, OSError):
+        # The device reset (or re-enumerated) under us; what we have is what there is.
+        log("device went away (reset?)")
     return "\n".join(out)
 
 

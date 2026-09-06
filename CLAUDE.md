@@ -91,9 +91,9 @@ Keep `FIRMWARE_VERSION` from upstream's `src/config.h` as the `--version` you re
 * Arduino images cannot carry a project name; the label comes from
   `launcher::handoff()` or `flash.py app --name`. Do not try to patch
   `esp_app_desc`.
-* Nothing in this repo has been validated on hardware yet except by
-  compilation (2026-09-06). First things to check on a real board: the panel
-  comes up (display init log line), touch orientation (`touchflip`), and the
-  side-button-through-RESET path. Say so plainly when reporting.
+* Hardware status (2026-09-06): launcher, OpenTrailPaper install, autostart,
+  hand-back and the full system check (15 pass, 1 warn) verified on a board.
+  Touch worked without `touchflip`. Still unverified: crash-loop pause,
+  side-button-through-RESET, deep-sleep wake into the menu.
 * Flash/serial output is the ground truth. When something "should work", run
   `tools/flash.py monitor` and read what the device says.

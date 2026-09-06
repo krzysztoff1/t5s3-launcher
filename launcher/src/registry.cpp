@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "version.h"
+
 // Must match launcher_api.h.
 static const char* kNs = "launcher";
 
@@ -55,15 +57,13 @@ int scan(Slot* out, int max) {
         s.valid = (esp_ota_get_partition_description(part, &desc) == ESP_OK);
         if (index < 0) {
             strlcpy(s.name, "Launcher", sizeof s.name);
-            strlcpy(s.version, desc.version, sizeof s.version);
+            strlcpy(s.version, LAUNCHER_VERSION, sizeof s.version);
         } else if (haveNvs) {
             char key[8];
             snprintf(key, sizeof key, "n%d", index);
-            String nm = p.getString(key, "");
+            if (p.isKey(key)) strlcpy(s.name, p.getString(key, "").c_str(), sizeof s.name);
             snprintf(key, sizeof key, "v%d", index);
-            String ver = p.getString(key, "");
-            strlcpy(s.name, nm.c_str(), sizeof s.name);
-            strlcpy(s.version, ver.c_str(), sizeof s.version);
+            if (p.isKey(key)) strlcpy(s.version, p.getString(key, "").c_str(), sizeof s.version);
         }
         if (s.index >= 0 && s.valid && s.name[0] == 0) {
             // Arduino images all report "arduino-lib-builder"; only show the
@@ -231,7 +231,7 @@ void dump(Print& out) {
         if (!p.isKey(key)) continue;
         String nm = p.getString(key, "");
         snprintf(key, sizeof key, "v%d", i);
-        String ver = p.getString(key, "");
+        String ver = p.isKey(key) ? p.getString(key, "") : String("");
         out.printf("[launcher] nvs: ota_%d name=\"%s\" version=\"%s\"\n", i, nm.c_str(), ver.c_str());
     }
     p.end();

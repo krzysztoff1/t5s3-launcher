@@ -77,10 +77,11 @@ repo's `CLAUDE.md` is the runbook, and `/install-app`, `/new-app`,
 
 ## Status
 
-Compiles (launcher, OpenTrailPaper fork, template). **Not yet run on hardware**
-as of 2026-09-06: the panel bring-up, touch orientation and the
-side-button-through-reset path are the first things to verify. See
-[docs/recovery.md](docs/recovery.md) if a flash goes wrong.
+Running on a board since 2026-09-06: install, menu, touch, autostart,
+OpenTrailPaper hand-back and the system check (every peripheral PASS) verified.
+Not yet exercised: the crash-loop pause, side-button-through-RESET and
+deep-sleep wake into the menu. See [docs/recovery.md](docs/recovery.md) if a
+flash goes wrong.
 
 ## Layout
 

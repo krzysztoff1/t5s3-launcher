@@ -40,6 +40,13 @@
 #include <esp_system.h>
 #include <string.h>
 #include <stdio.h>
+// Same test the Arduino core uses: OTG builds leave ARDUINO_USB_MODE undefined or 0.
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && !ARDUINO_USB_MODE
+#include <driver/periph_ctrl.h>
+#include <soc/rtc_cntl_reg.h>
+#include <soc/usb_serial_jtag_reg.h>
+#define LAUNCHER_API_OTG_USB 1
+#endif
 
 namespace launcher {
 
@@ -140,6 +147,17 @@ inline esp_reset_reason_t previousResetReason() {
     }
     eraseOtadata();
     delay(50);
+#ifdef LAUNCHER_API_OTG_USB
+    // This app runs USB in OTG mode. The PHY selection lives in RTC registers
+    // that survive esp_restart(); give the PHY back to USB-Serial-JTAG so the
+    // launcher is reachable over USB (the launcher also does this itself, this
+    // is belt and braces). Mirrors usb_switch_to_cdc_jtag() in the Arduino core.
+    periph_module_reset(PERIPH_USB_MODULE);
+    periph_module_disable(PERIPH_USB_MODULE);
+    CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                        RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+    CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
+#endif
     esp_restart();
     for (;;) {}
 }

@@ -82,6 +82,10 @@ bool begin() {
     g_ready = true;
     Serial.printf("[display] ready, %d grey levels, internal free %u\n",
                   painter.greyLevels(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    // E-paper keeps whatever the previous firmware left on the glass, and a
+    // first paint only drives the pixels that differ from the driver's idea of
+    // "blank". Scrub before drawing anything, as OpenTrailPaper does at boot.
+    hardClear(3);
     return true;
 }
 
