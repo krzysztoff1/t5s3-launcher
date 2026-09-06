@@ -13,8 +13,10 @@ Follow the runbook in CLAUDE.md, section "Task: install an app". In short:
 3. Choose the slot with the user's intent in mind: `ota_0` = OpenTrailPaper,
    `ota_1` = second app (warn once that OpenTrailPaper's self-update can evict it).
 4. `tools/flash.py app <slot> <bin> --name "<Name>" --version <ver> --boot`
-5. Verify from the output: `[launcher] registered`, `[launcher] booting`, then
-   `tools/flash.py monitor` for ~10 s and report the app's first log lines.
+5. Verify from the output: `[launcher] registered`, `[launcher] booting`, then the
+   app's boot log streams for 30 s. Report errors or watchdog/panic lines; for
+   OpenTrailPaper the healthy markers are `[rec] SD ready`, `[main] all tasks
+   started`, `usb storage: MSC ready`.
 6. If the launcher is missing on the device, `tools/flash.py system` first, then retry.
 
 Report what was flashed where, and anything the device printed that looks wrong.

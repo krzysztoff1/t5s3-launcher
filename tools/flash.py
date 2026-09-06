@@ -13,7 +13,8 @@ Run it directly (uv resolves pyserial + esptool on first use):
     tools/flash.py launcher                    # re-flash only the launcher (factory slot)
     tools/flash.py app ota_0 fw.bin --name OpenTrailPaper --version v1.19 --boot
     tools/flash.py cmd "list"                  # send a console command, print the reply
-    tools/flash.py boot ota_0                  # ask the launcher to start a slot
+    tools/flash.py boot ota_0                  # start a slot and follow its boot log live
+    tools/flash.py follow                      # after a manual reset: stream whatever comes up
     tools/flash.py syscheck                    # run the built-in system check, print results
     tools/flash.py monitor                     # plain serial monitor (Ctrl-C to stop)
 
@@ -292,6 +293,37 @@ def console(text: str | None, wait: float, stop: str | None = None,
     return "\n".join(out)
 
 
+def follow(seconds: float, after_port: str | None = None) -> None:
+    """Wait for the device to come (back) up and stream its console for `seconds`.
+
+    Survives the device resetting mid-way (it re-waits for a port), so a boot that
+    goes launcher -> app -> crash -> launcher is seen end to end. Note that
+    OpenTrailPaper brings its USB up only after mounting the SD card, so its first
+    seconds of boot log exist only in its SD log (/logs/...); everything from the
+    USB enumeration on is streamed here.
+    """
+    if after_port:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 6 and os.path.exists(after_port):
+            time.sleep(0.1)
+    end = time.monotonic() + seconds
+    port = wait_for(find_any_port, CONSOLE_PORT_TIMEOUT, "the device to come back on USB")
+    log(f"following {port} for {seconds:.0f}s (Ctrl-C to stop)")
+    try:
+        while time.monotonic() < end:
+            console(None, end - time.monotonic(), port=port)
+            if time.monotonic() >= end:
+                break
+            try:
+                port = wait_for(find_any_port, max(1.0, min(CONSOLE_PORT_TIMEOUT, end - time.monotonic())),
+                                "the device to come back on USB")
+                log(f"following {port}")
+            except SystemExit:
+                break
+    except KeyboardInterrupt:
+        pass
+
+
 def wait_for_launcher_console(timeout: float = CONSOLE_PORT_TIMEOUT) -> str:
     """After a reset the launcher comes up on the JTAG port; give USB time to enumerate."""
     port = wait_for(find_jtag_port, timeout, "the launcher's USB console")
@@ -394,6 +426,8 @@ def cmd_app(args) -> int:
                 port=lport)
     if args.boot:
         console(f"boot {slot['name']}", 3.0, stop="[launcher] booting", port=lport)
+        if args.follow > 0:
+            follow(args.follow, after_port=lport)
     else:
         console("menu", 2.0, stop="[launcher] menu", port=lport)
         log(f"installed. Start it with: tools/flash.py boot {slot['name']}")
@@ -407,7 +441,15 @@ def cmd_cmd(args) -> int:
 
 def cmd_boot(args) -> int:
     slot = app_slot(args.slot)
-    console(f"boot {slot['name']}", 3.0, stop="[launcher] booting")
+    port = console_port()
+    console(f"boot {slot['name']}", 3.0, stop="[launcher] booting", port=port)
+    if args.follow > 0:
+        follow(args.follow, after_port=port)
+    return 0
+
+
+def cmd_follow(args) -> int:
+    follow(args.wait)
     return 0
 
 
@@ -454,6 +496,8 @@ def main(argv=None) -> int:
     s.add_argument("--name", help="display name for the launcher menu")
     s.add_argument("--version", help="version string for the launcher menu")
     s.add_argument("--boot", action="store_true", help="start the app right after installing")
+    s.add_argument("--follow", type=float, default=30.0, metavar="SEC",
+                   help="with --boot: stream the app's console for SEC seconds (0 = off, default 30)")
     s.set_defaults(fn=cmd_app)
 
     s = sub.add_parser("cmd", help="send a console command and print the reply")
@@ -461,9 +505,15 @@ def main(argv=None) -> int:
     s.add_argument("--wait", type=float, default=3.0, help="seconds to listen (default 3)")
     s.set_defaults(fn=cmd_cmd)
 
-    s = sub.add_parser("boot", help="ask the launcher to start a slot")
+    s = sub.add_parser("boot", help="ask the launcher to start a slot and follow its boot log")
     s.add_argument("slot")
+    s.add_argument("--follow", type=float, default=30.0, metavar="SEC",
+                   help="stream the app's console for SEC seconds after the switch (0 = off, default 30)")
     s.set_defaults(fn=cmd_boot)
+
+    s = sub.add_parser("follow", help="wait for the device to (re)appear on USB and stream its console")
+    s.add_argument("--wait", type=float, default=30.0, help="seconds to stream (default 30)")
+    s.set_defaults(fn=cmd_follow)
 
     s = sub.add_parser("syscheck", help="run the launcher's system check and print the report")
     s.add_argument("--wait", type=float, default=120.0)

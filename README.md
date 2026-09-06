@@ -53,8 +53,8 @@ tools/flash.py app ota_0 apps/opentrailpaper/.pio/build/t5s3-launcher/firmware.b
 
 `tools/flash.py` handles both of the board's USB personalities (the launcher's
 USB-Serial-JTAG and OpenTrailPaper's USB-OTG), so no BOOT/RESET presses are
-needed. `tools/flash.py --help` lists the rest: `ports`, `cmd`, `boot`,
-`syscheck`, `monitor`.
+needed. `tools/flash.py --help` lists the rest: `ports`, `cmd`, `boot` (starts
+an app and streams its boot log), `follow`, `syscheck`, `monitor`.
 
 ## Using it
 

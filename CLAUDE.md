@@ -28,6 +28,8 @@ cd apps/opentrailpaper && pio run -e t5s3-launcher   # build OpenTrailPaper for 
 tools/flash.py ports                            # is a board connected, and in which state
 tools/flash.py system                           # first install: bootloader + table + launcher
 tools/flash.py app ota_0 apps/opentrailpaper/.pio/build/t5s3-launcher/firmware.bin --name OpenTrailPaper --version v1.19 --boot
+tools/flash.py boot ota_0                       # start an app AND stream its boot log for 30 s
+tools/flash.py follow                           # after a manual RESET: stream whatever comes up
 tools/flash.py cmd "list"                       # talk to the launcher (or the running app)
 tools/flash.py syscheck                         # run the hardware check, prints "[syscheck] done"
 tools/flash.py monitor                          # tail serial
@@ -46,8 +48,11 @@ console understands `launcher` (hand back) and `bootloader`.
    a second app goes in `ota_1` and the user must know OpenTrailPaper's next
    self-update can replace it (docs/boot-flow.md, "two OTA slots").
 4. `tools/flash.py app <slot> <bin> --name "<Name>" --version <ver> --boot`.
-5. Confirm: the command prints `[launcher] registered` and `[launcher] booting`.
-   Then `tools/flash.py monitor` for ~10 s to see the app come up.
+5. Confirm: the command prints `[launcher] registered` and `[launcher] booting`,
+   then streams the app's boot log for 30 s (`--follow SEC` to change). Read it
+   for errors. OpenTrailPaper's first seconds are only in its SD log
+   (`/logs/YYYYMMDD.log`) because its USB starts after the SD mount; a healthy
+   boot shows `[rec] SD ready`, `[main] all tasks started`, `usb storage: MSC ready`.
 6. If the launcher itself is not on the device yet (`system` never run, or the
    console never answers `list`), run `tools/flash.py system` first.
 
