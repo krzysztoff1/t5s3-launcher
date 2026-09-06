@@ -131,7 +131,7 @@ static void handle(char* line) {
         hw::rebootToDownloadMode();
     } else if (!strcasecmp(cmd, "reboot")) {
         Serial.println("[launcher] rebooting");
-        Serial.flush(); delay(80);
+        delay(80);
         esp_restart();
     } else if (!strcasecmp(cmd, "ver")) {
         Serial.printf("[launcher] %s v%s built %s %s\n", LAUNCHER_NAME, LAUNCHER_VERSION, __DATE__, __TIME__);

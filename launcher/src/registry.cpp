@@ -109,7 +109,9 @@ bool boot(int index, esp_reset_reason_t reasonToStore) {
         return false;
     }
     Serial.printf("[launcher] booting ota_%d\n", index);
-    Serial.flush();
+    // No Serial.flush(): HWCDC::flush() in Arduino 2.0.x spins until a host
+    // drains the buffer, i.e. forever when nothing has the port open. That was
+    // the "stuck on Starting" when tapping an app with no terminal attached.
     delay(100);
     esp_restart();
     return true;

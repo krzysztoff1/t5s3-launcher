@@ -116,7 +116,7 @@ void backlight(uint8_t level) {
 
 void deepSleep() {
     Serial.println("[launcher] deep sleep (BOOT button wakes)");
-    Serial.flush();
+    delay(50);   // never Serial.flush() on HWCDC: it hangs without a host
     backlight(0);
     radioPower(false);
     display::end();
@@ -132,8 +132,7 @@ void rebootToDownloadMode() {
     // What usb_persist_restart(RESTART_BOOTLOADER) does underneath: a sticky RTC
     // bit the ROM honours on the next reset. tools/flash.py clears it again.
     Serial.println("[launcher] entering download mode - flash now");
-    Serial.flush();
-    delay(100);
+    delay(100);  // no flush, see deepSleep()
     REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
     esp_restart();
     for (;;) {}
