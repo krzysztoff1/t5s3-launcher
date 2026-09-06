@@ -1,0 +1,57 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: launcher
+            dir: launcher
+            env: launcher
+          - name: opentrailpaper
+            dir: apps/opentrailpaper
+            env: t5s3-launcher
+          - name: template
+            dir: apps/_template
+            env: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+      - run: pip install --upgrade platformio
+      - name: Vendor symlink for the OpenTrailPaper fork
+        run: |
+          mkdir -p apps/opentrailpaper/vendor
+          ln -sfn ../../../vendor/T5S3-4.7-e-paper-PRO apps/opentrailpaper/vendor/T5S3-4.7-e-paper-PRO
+      - name: Shared files in sync
+        run: tools/check-sync.sh
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: pio run -e ${{ matrix.env }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-firmware
+          path: |
+            ${{ matrix.dir }}/.pio/build/${{ matrix.env }}/firmware.bin
+            ${{ matrix.dir }}/.pio/build/${{ matrix.env }}/bootloader.bin
+            ${{ matrix.dir }}/.pio/build/${{ matrix.env }}/partitions.bin

@@ -1,0 +1,7 @@
+[submodule "vendor/T5S3-4.7-e-paper-PRO"]
+	path = vendor/T5S3-4.7-e-paper-PRO
+	url = https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO
+[submodule "apps/opentrailpaper"]
+	path = apps/opentrailpaper
+	url = https://github.com/krzysztoff1/OpenTrailPaper
+	branch = launcher

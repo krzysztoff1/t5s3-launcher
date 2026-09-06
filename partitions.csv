@@ -1,0 +1,21 @@
+# t5s3-launcher shared flash layout for the LilyGO T5S3 4.7" e-paper PRO (16 MB).
+#
+# THE single source of truth for every firmware on the device. The launcher
+# builds against this file directly; apps carry a verbatim copy that
+# tools/check-sync.sh keeps honest. Changing it means re-partitioning, which
+# means reflashing everything (tools/flash.py system + every app slot).
+#
+# nvs and otadata keep Arduino's stock offsets so settings written by a
+# firmware built on default_16MB.csv survive the move. Exactly TWO OTA slots on
+# purpose: OpenTrailPaper's self-updater (Arduino Update) writes to "the next
+# OTA slot in rotation", so a third slot would be overwritten by its next
+# update. See docs/boot-flow.md.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+factory,    app,  factory,  0x10000,  0x300000,
+ota_0,      app,  ota_0,    0x310000, 0x600000,
+ota_1,      app,  ota_1,    0x910000, 0x600000,
+storage,    data, spiffs,   0xF10000, 0xE0000,
+coredump,   data, coredump, 0xFF0000, 0x10000,
