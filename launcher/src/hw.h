@@ -17,7 +17,10 @@ bool expanderOk();
 bool chargerOk();
 bool gaugeOk();
 
-bool sideButtonPressed();        // expander PC12, LOW = pressed
+bool sideButtonPressed();        // expander IO12, LOW = pressed
+// EPD_Painter's power control configures the expander's whole upper port as
+// outputs, the side button's pin included. Call after the display is up.
+void rearmSideButton();
 bool bootButtonPressed();        // GPIO0, LOW = pressed
 void radioPower(bool on);        // GPS + LoRa 3V3 rail
 bool usbPowered();               // charger VBUS present (false if no charger)

@@ -57,7 +57,18 @@ void beginI2C() {
 
 bool sideButtonPressed() {
     if (!g_ioOk) return false;
+    // Two reads a few ms apart, as OpenTrailPaper does: a single LOW can be an
+    // I2C collision with the display driver's power-control traffic.
+    if (g_io.digitalRead(IOEXP_PIN_SIDE_BUTTON) != LOW) return false;
+    delayMicroseconds(3000);
     return g_io.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+}
+
+void rearmSideButton() {
+    // epd_painter_powerctl::begin() does pcaPinMode(8..13, OUTPUT); pin 10 is
+    // not the driver's, it is the button, and driven low it reads "pressed"
+    // forever. XL9555::pinMode() read-modify-writes, so only bit 10 changes.
+    if (g_ioOk) g_io.pinMode(IOEXP_PIN_SIDE_BUTTON, INPUT);
 }
 
 bool bootButtonPressed() {

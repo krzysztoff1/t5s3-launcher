@@ -56,13 +56,43 @@ USB-Serial-JTAG and OpenTrailPaper's USB-OTG), so no BOOT/RESET presses are
 needed. `tools/flash.py --help` lists the rest: `ports`, `cmd`, `boot` (starts
 an app and streams its boot log), `follow`, `syscheck`, `monitor`.
 
+## Buttons
+
+The board has three physical buttons:
+
+| Button | Where | Wired to | In the launcher | In OpenTrailPaper |
+|---|---|---|---|---|
+| **BOOT** | the main key on the case | GPIO 0 | short press: next item, long press: select; wakes from sleep | hold: power dialog (Shut down); wakes from sleep |
+| **Side button** | the second key on the case edge (LilyGO's `BUTTON`, on the IO expander) | XL9555 IO12 | next item; **hold through a RESET to force the menu** | unused |
+| **RST** | small reset button on the back | chip EN | hardware reset | hardware reset |
+
+Holding BOOT while pressing RST puts the chip in USB download mode; that is the
+ROM's rule, which is why the *side* button is the menu key.
+
+## Getting back to the launcher
+
+* **From the device:** hold the side button, press and release RST, keep holding
+  until the menu shows. Works whether OpenTrailPaper is running or asleep.
+* **Always want the menu?** Turn Autostart off in the menu; every reset then
+  lands there.
+* **From the Mac:** `tools/flash.py cmd "launcher"` while OpenTrailPaper runs.
+
+## Shutting down
+
+Both firmwares use deep sleep; the board has no power switch and unplugging USB
+changes nothing, the battery keeps running what is on screen.
+
+* **In OpenTrailPaper:** hold BOOT until its power dialog opens, tap *Shut down*.
+  It draws a farewell screen and sleeps; BOOT wakes it straight back into
+  OpenTrailPaper (the launcher is not involved on a wake). It also does this by
+  itself after its idle timeout.
+* **In the launcher:** tap *Sleep*, or leave it idle five minutes on battery.
+  BOOT wakes it into the menu.
+
 ## Using it
 
 * **Menu**: tap an app to start it. BOOT short-press moves the highlight, long
-  press selects; the side button also moves it. Idle five minutes on battery →
-  deep sleep; BOOT wakes.
-* **Back to the launcher from an app**: OpenTrailPaper's console command
-  `launcher`, or hold the **side button** while pressing RESET.
+  press selects; the side button also moves it.
 * **Autostart**: on by default; a cold boot goes straight to the last app after
   a short countdown. Toggle in the menu or `tools/flash.py cmd "autostart off"`.
 * **Crash loop**: three crashes in a row pause autostart and the menu says so.

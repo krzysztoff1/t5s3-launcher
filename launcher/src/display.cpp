@@ -1,6 +1,7 @@
 #include "display.h"
 
 #include <Arduino.h>
+#include "hw.h"
 #include <Wire.h>
 #include <esp_heap_caps.h>
 #include <string.h>
@@ -80,6 +81,7 @@ bool begin() {
     }
     g_painter = &painter;
     g_ready = true;
+    hw::rearmSideButton();   // the driver just took the button's expander pin
     Serial.printf("[display] ready, %d grey levels, internal free %u\n",
                   painter.greyLevels(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     // E-paper keeps whatever the previous firmware left on the glass, and a

@@ -1,3 +1,3 @@
 #pragma once
 #define LAUNCHER_NAME    "t5s3-launcher"
-#define LAUNCHER_VERSION "0.1.1"
+#define LAUNCHER_VERSION "0.1.2"

@@ -41,6 +41,10 @@ ESP32-S3-WROOM-1, 16 MB flash, 8 MB octal PSRAM. 960×540 e-paper driven in
   auto-reset works). OpenTrailPaper runs USB-OTG for mass storage; it must be
   asked to reboot into download mode (`bootloader` console command), which
   `tools/flash.py` does automatically.
+* **The display driver takes the side button's pin.** EPD_Painter's power
+  control sets expander pins 8..13 to outputs; pin 10 (IO12, the button) is not
+  its own. Re-arm it as an input after `begin()` (`hw::rearmSideButton()`), or
+  it reads "pressed" forever.
 * **Shared expander.** EPD_Painter's power control and our side-button/radio
   rail code both talk to the XL9555 at 0x20. OpenTrailPaper does the same and it
   works in practice; keep expander writes to pin-level calls.
