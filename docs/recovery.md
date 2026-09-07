@@ -15,9 +15,10 @@ NVS survive; add `--erase-nvs` to wipe them).
 sets a sticky RTC bit that only a physical RESET or `tools/flash.py`'s finish
 step clears. Press RESET once, or run `tools/flash.py launcher`.
 
-**Launcher says an app crashed N times.** Autostart is paused; the menu is up.
-Start the app by tapping it (the counter is reset), read the app's own logs,
-or `tools/flash.py monitor` right after tapping to catch the crash.
+**Launcher says an app crashed.** The menu is up (it always is — there is no
+autostart). The note shows the crash reason; start the app again by tapping it,
+read the app's own logs, or `tools/flash.py monitor` right after tapping to catch
+the crash.
 
 **Changed partitions.csv.** Everything must be reflashed: `tools/flash.py
 system`, then `tools/flash.py app ...` for each slot. NVS keeps Arduino's stock

@@ -44,6 +44,10 @@ Rules for an app that plays well:
 5. If the app uses the e-paper through EPD_Painter, copy the three init lines
    from the template (`cfg.i2c.wire = &Wire`, `setAutoShutdown(false)`,
    portrait canvas). See docs/hardware.md.
+6. Keep the template's `screenshot` console line —
+   `launcher::dumpScreen(gfx->getBuffer(), 540, 960)` — so
+   `tools/flash.py screenshot shot.png` gives you a real PNG of the app's
+   screen for a README or a bug report.
 
 ## Port an existing project
 

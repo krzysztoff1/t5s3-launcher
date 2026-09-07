@@ -11,9 +11,10 @@ Multi-app launcher for the LilyGO T5S3 4.7" e-paper PRO (ESP32-S3, 16 MB flash,
 |---|---|
 | `partitions.csv` | THE flash layout. Apps carry verbatim copies; never edit a copy. |
 | `launcher_api/launcher_api.h` | Header apps include. `handoff()` first line of `setup()`, `returnToLauncher()` to go back. Apps carry verbatim copies. |
-| `launcher/` | PlatformIO project: menu, autostart, crash accounting, serial console, built-in system check. |
+| `launcher/` | PlatformIO project: menu, crash accounting, serial console, built-in system check. |
 | `apps/opentrailpaper/` | Submodule: fork of RaemondBW/OpenTrailPaper, branch `launcher`, env `t5s3-launcher`. |
 | `apps/_template/` | Copy this to start a new app. |
+| `apps/paperback/` | E-book reader app (embedded sample books + SD `/books/*.txt`, Hacker News over Wi-Fi). Env `app`, slot `ota_1`. Host test: `apps/paperback/test/host/run.sh assets/books/*.txt`. |
 | `tools/flash.py` | Everything USB: full install, install an app, console commands, system check. `uv` script, self-contained. |
 | `tools/check-sync.sh` | Fails if any app's copy of the two shared files drifted. |
 | `tools/bootstrap.sh` | Fresh clone → submodules, vendor symlink, PlatformIO packages. |
@@ -25,6 +26,7 @@ Multi-app launcher for the LilyGO T5S3 4.7" e-paper PRO (ESP32-S3, 16 MB flash,
 export PATH="$HOME/.local/bin:$PATH"          # pio is installed with uv tool
 cd launcher && pio run                          # build launcher -> launcher/.pio/build/launcher/firmware.bin
 cd apps/opentrailpaper && pio run -e t5s3-launcher   # build OpenTrailPaper for ota_0
+cd apps/paperback && pio run                    # build the Paperback reader for ota_1
 tools/flash.py ports                            # is a board connected, and in which state
 tools/flash.py system                           # first install: bootloader + table + launcher
 tools/flash.py app ota_0 apps/opentrailpaper/.pio/build/t5s3-launcher/firmware.bin --name OpenTrailPaper --version v1.19 --boot
@@ -32,13 +34,19 @@ tools/flash.py boot ota_0                       # start an app AND stream its bo
 tools/flash.py follow                           # after a manual RESET: stream whatever comes up
 tools/flash.py cmd "list"                       # talk to the launcher (or the running app)
 tools/flash.py syscheck                         # run the hardware check, prints "[syscheck] done"
+tools/flash.py screenshot docs/img/x.png        # real PNG of what is on the panel right now
 tools/flash.py monitor                          # tail serial
 tools/check-sync.sh
 ```
 
-The launcher's console: `help list boot register unregister autostart menu
-syscheck touchflip nvs forget sleep bootloader reboot ver`. OpenTrailPaper's
-console understands `launcher` (hand back) and `bootloader`.
+The launcher's console: `help list boot register unregister menu [home|settings]
+syscheck touchflip nvs forget light screenshot sleep bootloader reboot ver`. There is no autostart:
+the launcher always shows its menu on boot; an app starts only when the user
+taps it or a host runs `boot`. On screen the menu is two screens: a HOME list of
+the app slots (tap to boot) and a SETTINGS screen (touch flip, front light,
+system check, sleep, flash mode behind a confirm sheet); BOOT short = next, held
+= select; side short = next, held = back; the GT911 capacitive key goes back.
+OpenTrailPaper's console understands `launcher` (hand back) and `bootloader`.
 
 ## Task: install an app on the connected device
 
@@ -96,9 +104,36 @@ Keep `FIRMWARE_VERSION` from upstream's `src/config.h` as the `--version` you re
 * Arduino images cannot carry a project name; the label comes from
   `launcher::handoff()` or `flash.py app --name`. Do not try to patch
   `esp_app_desc`.
-* Hardware status (2026-09-06): launcher, OpenTrailPaper install, autostart,
-  hand-back and the full system check (15 pass, 1 warn) verified on a board.
-  Touch worked without `touchflip`. Still unverified: crash-loop pause,
-  side-button-through-RESET, deep-sleep wake into the menu.
+* Hardware status: launcher install, OpenTrailPaper + Paperback install and
+  hand-back, and the full system check (16 pass on 2026-09-07) verified on a
+  board. Touch worked without `touchflip`. Still unverified: side-button-through-
+  RESET, deep-sleep wake into the menu.
+* UI redesign (2026-09-07, v0.2.0): the menu is now HOME (app-slot list) + a
+  separate SETTINGS screen, every touch target >= 88 px, OpenTrailPaper's status
+  bar / list-row / switch / stepper / confirm-sheet vocabulary (`ui.cpp`,
+  helpers in `display.cpp`). syscheck redraws in the same status bar. The
+  capacitive GT911 key (`hw::homeKeyPressed()`) is wired as "back". Built and
+  system-check-clean on the board; the touch layout itself is unverified by a
+  human tapping it.
+* No autostart (2026-09-07): the launcher always shows its menu on boot; an app
+  starts only on a tap or `flash.py boot`. `main.cpp` has no countdown, Settings
+  has no autostart switch, and the `autostart` console command is gone. The
+  `autostart` NVS key is now ignored (registry still defines the accessors).
+* Paperback (2026-09-06): verified on the board: install, library with cover
+  art, page layout and turns (10-25 ms per page), console, Hacker News over
+  Wi-Fi (join, NTP clock, front page, article via r.jina.ai). Still unverified:
+  sleep/wake footer repair, SD-card books and covers, the shared front light
+  round trip between apps.
+* The front light is one device-wide setting: `launcher::frontLight()` /
+  `setFrontLight(duty)` in `launcher_api.h` (NVS key `light`, PWM duty 0..255,
+  steps 0/12/90/230 = off/low/medium/high). The launcher applies it at boot and
+  has a menu item; Paperback and OpenTrailPaper read it at boot and write it
+  whenever the user changes the light. A new app must do the same.
+* Screenshots are real captures, never mock-ups: `launcher::dumpScreen()` in
+  `launcher_api.h` run-length encodes the 4-level framebuffer over the console
+  and `tools/flash.py screenshot <file>.png` decodes it. The launcher, Paperback
+  and the template have the `screenshot` command; OpenTrailPaper does not (its
+  framebuffer is epdiy's 4bpp landscape one). `docs/img/*.png` are the README's,
+  re-take them when a screen changes.
 * Flash/serial output is the ground truth. When something "should work", run
   `tools/flash.py monitor` and read what the device says.

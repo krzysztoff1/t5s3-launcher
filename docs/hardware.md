@@ -36,7 +36,8 @@ ESP32-S3-WROOM-1, 16 MB flash, 8 MB octal PSRAM. 960×540 e-paper driven in
   `src/epd_compat.cpp`.
 * **Touch orientation is unverified** on hardware for this rotation. If the
   system check's touch step reports coordinates mirrored against where you
-  tapped, run `tools/flash.py cmd "touchflip on"` and reboot.
+  tapped, run `tools/flash.py cmd "touchflip on"` (or toggle it on the SETTINGS
+  screen); the launcher applies it at once, no reboot needed.
 * **Two USB personalities.** The launcher runs USB-Serial-JTAG (esptool
   auto-reset works). OpenTrailPaper runs USB-OTG for mass storage; it must be
   asked to reboot into download mode (`bootloader` console command), which

@@ -12,11 +12,10 @@ power-on / RESET / crash / esp_restart()
         │
         ├─ otadata blank ──────────────► factory = LAUNCHER
         │                                  │
-        │                                  ├─ show_menu flag, button held, autostart off,
-        │                                  │  crash loop, deep-sleep wake ──► menu
-        │                                  │
-        │                                  └─ else: countdown, then
-        │                                     esp_ota_set_boot_partition(ota_N) + restart
+        │                                  └─► MENU (always; no autostart)
+        │                                        │
+        │                                        └─ user taps an app (or flash.py boot):
+        │                                           esp_ota_set_boot_partition(ota_N) + restart
         │                                              │
         └─ otadata → ota_N ◄───────────────────────────┘
                  │
@@ -32,21 +31,22 @@ power-on / RESET / crash / esp_restart()
 
 So that the launcher is always one RESET away, with no bootloader changes:
 
-* **Hold the side button and press RESET** → bootloader → blank otadata →
-  launcher → button held → menu. Works even if the app's UI is wedged.
+* **The launcher is always the menu.** There is no autostart: a cold boot,
+  RESET, or crash all land in the menu. Hold the side button through a RESET only
+  if the running app never handed back (otadata still points at it).
 * **A crashing app cannot lock you out.** A panic resets the chip, the launcher
-  comes up, sees the crash reason and that it had just armed an autostart, and
-  counts it. Three in a row pause autostart and show the menu with a note.
+  comes up in its menu and notes the crash reason. Because it never starts an app
+  on its own, a crash-looping app simply drops you back in the menu.
 * **Deep sleep is unaffected.** The stock Arduino bootloader is built with
   `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP`, so a wake from deep sleep
   fast-boots the partition recorded in RTC memory *before* otadata is even read
   (ESP-IDF 4.4 `bootloader_start.c`). OpenTrailPaper's sleep/wake cycle never
   sees the launcher.
 
-The cost is a launcher hop on every cold boot: well under a second when on
-battery. On USB power the launcher waits 2.5 s so `tools/flash.py` can get a
-command in (`register`, `boot`) before the autostart fires; any console byte or
-button press cancels the countdown.
+The cost is a launcher hop on every cold boot: it draws the menu and waits.
+There is no countdown and no autostart — an app starts only when you tap it or a
+host runs `tools/flash.py boot`. The launcher's console is live the whole time,
+so `register`/`boot` from `tools/flash.py` need no timing window.
 
 ## Reset reason plumbing
 
@@ -71,12 +71,13 @@ for its "save the core dump after a crash" path.
 | key | type | meaning |
 |---|---|---|
 | `last_slot` | u8 | OTA index of the app that last ran |
-| `autostart` | u8 | 1 = cold boot goes straight to `last_slot` (default) |
+| `autostart` | u8 | ignored since v0.2.0 (the launcher always shows the menu) |
 | `show_menu` | u8 | set by `launcher::returnToLauncher()`, consumed by the launcher |
 | `armed` | u8 | set right before starting an app; a crash reset while armed counts |
-| `crashes` | u8 | consecutive crashes; 3 pauses autostart |
+| `crashes` | u8 | consecutive crashes; counted and logged, no longer pauses anything |
 | `app_rr` | u8 | true reset reason handed to the app |
-| `tflip` | u8 | rotate touch 180° (see hardware.md) |
+| `tflip` | u8 | rotate touch 180° (see hardware.md); live on SETTINGS |
+| `light` | u8 | front-light PWM duty, shared with every app |
 | `n<i>`, `v<i>` | str | display name / version registered for `ota_<i>` |
 
 ## Why exactly two OTA slots
