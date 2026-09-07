@@ -1,7 +1,7 @@
 // Minimal app for the LilyGO T5S3 4.7" e-paper PRO under t5s3-launcher.
 //
 // Shows a screen, and goes back to the launcher when BOOT is held for a second
-// or the console receives `launcher`. Everything launcher-specific is the two
+// or the console receives `launcher`. Everything launcher-specific is the
 // launcher:: calls; the rest is an ordinary EPD_Painter sketch.
 #include <Arduino.h>
 #include <Wire.h>
@@ -57,13 +57,14 @@ void setup() {
 }
 
 void loop() {
-    // Console: `launcher` hands back.
+    // Console: `launcher` hands back, `screenshot` feeds tools/flash.py screenshot.
     static char line[32]; static size_t n = 0;
     while (Serial.available()) {
         const char c = (char)Serial.read();
         if (c == '\n' || c == '\r') {
             line[n] = 0; n = 0;
             if (!strcasecmp(line, "launcher")) launcher::returnToLauncher();
+            else if (!strcasecmp(line, "screenshot") && gfx) launcher::dumpScreen(gfx->getBuffer(), 540, 960);
         } else if (n < sizeof line - 1) line[n++] = c;
     }
     // BOOT held for a second hands back.

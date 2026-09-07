@@ -56,6 +56,7 @@ namespace launcher {
 //   show_menu  u8   1 = an app asked for the menu; the launcher consumes it
 //   app_rr     u8   reset reason preceding the launcher's last app start
 //   crashes    u8   consecutive autostarts that ended in a crash (launcher-owned)
+//   light      u8   front light PWM duty 0..255, shared by everyone (see frontLight())
 //   n<i>       str  display name registered for OTA slot i
 //   v<i>       str  version string registered for OTA slot i
 static constexpr const char* kNvsNamespace = "launcher";
@@ -136,6 +137,120 @@ inline void handoff(const char* name, const char* version) {
 // handoff(); before it, falls back to esp_reset_reason().
 inline esp_reset_reason_t previousResetReason() {
     return detail::handoffDone() ? detail::storedResetReason() : esp_reset_reason();
+}
+
+// Front light, shared by the launcher and every app so the level set in one
+// place is the level everywhere: the PT4103's PWM duty (0 = off .. 255), NVS
+// key "light" in the shared namespace. Apps map it to their own steps.
+inline bool hasFrontLight() {
+    Preferences p;
+    bool has = false;
+    if (p.begin(kNvsNamespace, true)) { has = p.isKey("light"); p.end(); }
+    return has;
+}
+inline uint8_t frontLight() {
+    Preferences p;
+    uint8_t duty = 0;
+    if (p.begin(kNvsNamespace, true)) { duty = p.getUChar("light", 0); p.end(); }
+    return duty;
+}
+inline void setFrontLight(uint8_t duty) {
+    Preferences p;
+    if (p.begin(kNvsNamespace, false)) {
+        if (p.getUChar("light", 0xFF) != duty) p.putUChar("light", duty);
+        p.end();
+    }
+}
+
+// Screenshot. The panel is four-level greyscale and every firmware here keeps
+// its framebuffer as one byte per pixel, 0 (paper white) .. 3 (ink black), so
+// one dumper serves the launcher and every app: run-length encode the pixels,
+// base64 the tokens, print them between two markers. `tools/flash.py
+// screenshot` turns that back into a PNG of exactly what is on the glass.
+// Streams straight into Serial, so it costs ~100 bytes of stack and no heap.
+//
+//   [screenshot] begin <w> <h> 4
+//   <base64, 76 characters per line>
+//   [screenshot] end <tokenBytes> <crc32>
+//
+// A token is (level << 6) | k. k <= 62 is a run of k + 1 pixels; k == 63 means
+// two more bytes follow, big-endian, and the run is 63 + those.
+namespace detail {
+
+inline uint32_t crc32Byte(uint32_t crc, uint8_t b) {
+    crc ^= b;
+    for (int i = 0; i < 8; ++i) crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320u : 0u);
+    return crc;
+}
+
+// Base64 into fixed-width lines, one byte at a time.
+struct ScreenDumper {
+    char     line[80];
+    uint8_t  trio[3];
+    int      lineLen = 0;
+    int      trioLen = 0;
+    uint32_t crc = 0xFFFFFFFFu;
+    uint32_t count = 0;
+
+    void putChar(char c) {
+        line[lineLen++] = c;
+        if (lineLen == 76) {
+            line[lineLen] = 0;
+            Serial.println(line);
+            lineLen = 0;
+            yield();   // thousands of lines go past; let the rest of the system breathe
+        }
+    }
+    void putTrio(int n) {
+        static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const uint32_t v = ((uint32_t)trio[0] << 16) |
+                           ((uint32_t)(n > 1 ? trio[1] : 0) << 8) |
+                           (uint32_t)(n > 2 ? trio[2] : 0);
+        putChar(kB64[(v >> 18) & 63]);
+        putChar(kB64[(v >> 12) & 63]);
+        putChar(n > 1 ? kB64[(v >> 6) & 63] : '=');
+        putChar(n > 2 ? kB64[v & 63] : '=');
+    }
+    void putByte(uint8_t b) {
+        crc = crc32Byte(crc, b);
+        count++;
+        trio[trioLen++] = b;
+        if (trioLen == 3) { putTrio(3); trioLen = 0; }
+    }
+    void finish() {
+        if (trioLen) { putTrio(trioLen); trioLen = 0; }
+        if (lineLen) { line[lineLen] = 0; Serial.println(line); lineLen = 0; }
+    }
+};
+
+}  // namespace detail
+
+inline void dumpScreen(const uint8_t* fb, int w, int h) {
+    if (!fb || w <= 0 || h <= 0) {
+        Serial.println("[screenshot] no framebuffer");
+        return;
+    }
+    Serial.printf("[screenshot] begin %d %d 4\n", w, h);
+    detail::ScreenDumper d;
+    const size_t n = (size_t)w * (size_t)h;
+    const size_t kMaxRun = 63 + 65535;
+    size_t i = 0;
+    while (i < n) {
+        const uint8_t v = fb[i] & 3;
+        size_t run = 1;
+        while (i + run < n && (fb[i + run] & 3) == v && run < kMaxRun) run++;
+        i += run;
+        if (run <= 63) {
+            d.putByte((uint8_t)((v << 6) | (uint8_t)(run - 1)));
+        } else {
+            const uint32_t extra = (uint32_t)(run - 63);
+            d.putByte((uint8_t)((v << 6) | 63));
+            d.putByte((uint8_t)(extra >> 8));
+            d.putByte((uint8_t)(extra & 0xFF));
+        }
+    }
+    d.finish();
+    Serial.printf("[screenshot] end %u %08X\n", (unsigned)d.count, (unsigned)(d.crc ^ 0xFFFFFFFFu));
 }
 
 // Flag the launcher to show its menu (no autostart) and reboot into it now.
