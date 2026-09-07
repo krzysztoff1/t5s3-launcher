@@ -16,6 +16,7 @@ Run it directly (uv resolves pyserial + esptool on first use):
     tools/flash.py boot ota_0                  # start a slot and follow its boot log live
     tools/flash.py follow                      # after a manual reset: stream whatever comes up
     tools/flash.py syscheck                    # run the built-in system check, print results
+    tools/flash.py screenshot menu.png         # PNG of what is on the e-paper right now
     tools/flash.py monitor                     # plain serial monitor (Ctrl-C to stop)
 
 Design notes
@@ -38,11 +39,14 @@ Design notes
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import subprocess
 import sys
+import struct
 import tempfile
 import time
+import zlib
 
 import serial
 import serial.tools.list_ports as list_ports
@@ -458,6 +462,83 @@ def cmd_syscheck(args) -> int:
     return 0
 
 
+# --- screenshot -------------------------------------------------------------
+# The firmwares' `screenshot` command prints the framebuffer as base64 between
+# two markers; the encoding is documented in launcher_api/launcher_api.h. Four
+# grey levels, 0 = paper white .. 3 = ink black, which is exactly a 2-bit
+# greyscale PNG once the levels are inverted.
+SCREENSHOT_BEGIN = "[screenshot] begin"
+SCREENSHOT_END = "[screenshot] end"
+
+
+def decode_screenshot(text: str) -> tuple[int, int, bytearray]:
+    """Turn a console transcript containing one dump into (w, h, pixels)."""
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if SCREENSHOT_BEGIN in l), None)
+    if start is None:
+        raise SystemExit("[flash] no screenshot in the reply "
+                         "(old firmware? re-flash it, or try `menu` first)")
+    head = lines[start].split(SCREENSHOT_BEGIN, 1)[1].split()
+    w, h = int(head[0]), int(head[1])
+    end = next((i for i in range(start + 1, len(lines)) if SCREENSHOT_END in lines[i]), None)
+    if end is None:
+        raise SystemExit("[flash] the screenshot dump was cut short")
+    tail = lines[end].split(SCREENSHOT_END, 1)[1].split()
+
+    tokens = base64.b64decode("".join(l.strip() for l in lines[start + 1:end]))
+    if tail and int(tail[0]) != len(tokens):
+        raise SystemExit(f"[flash] dump truncated: {len(tokens)} of {tail[0]} bytes")
+    if len(tail) > 1 and (zlib.crc32(tokens) & 0xFFFFFFFF) != int(tail[1], 16):
+        raise SystemExit("[flash] the dump did not survive the serial line (CRC mismatch)")
+
+    pixels = bytearray()
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        level, k = t >> 6, t & 0x3F
+        if k < 63:
+            run, i = k + 1, i + 1
+        else:
+            run, i = 63 + (tokens[i + 1] << 8 | tokens[i + 2]), i + 3
+        pixels += bytes([level]) * run
+    if len(pixels) != w * h:
+        raise SystemExit(f"[flash] decoded {len(pixels)} pixels, expected {w * h}")
+    return w, h, pixels
+
+
+def write_png(path: str, w: int, h: int, pixels: bytes) -> None:
+    """2-bit greyscale PNG. Levels are ink coverage, PNG samples are brightness."""
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)                                  # filter: None
+        row = pixels[y * w:(y + 1) * w]
+        packed = bytearray((w + 3) // 4)
+        for x, level in enumerate(row):
+            packed[x >> 2] |= (3 - (level & 3)) << (6 - 2 * (x & 3))
+        raw += packed
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    png = (b"\x89PNG\r\n\x1a\n" +
+           chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 2, 0, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress(bytes(raw), 9)) +
+           chunk(b"IEND", b""))
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def cmd_screenshot(args) -> int:
+    port = console_port()
+    text = console("screenshot", args.wait, stop=SCREENSHOT_END, port=port, quiet=True)
+    w, h, pixels = decode_screenshot(text)
+    write_png(args.out, w, h, pixels)
+    ink = sum(1 for p in pixels if p) * 100 // (w * h)
+    log(f"{args.out}: {w}x{h}, {os.path.getsize(args.out) / 1024:.1f} KB, {ink}% inked")
+    return 0
+
+
 def cmd_monitor(_args) -> int:
     port = console_port()
     log(f"monitoring {port} (Ctrl-C to stop)")
@@ -518,6 +599,11 @@ def main(argv=None) -> int:
     s = sub.add_parser("syscheck", help="run the launcher's system check and print the report")
     s.add_argument("--wait", type=float, default=120.0)
     s.set_defaults(fn=cmd_syscheck)
+
+    s = sub.add_parser("screenshot", help="save what is on the e-paper right now as a PNG")
+    s.add_argument("out", nargs="?", default="screenshot.png", help="output PNG (default screenshot.png)")
+    s.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the dump (default 60)")
+    s.set_defaults(fn=cmd_screenshot)
 
     sub.add_parser("monitor", help="serial monitor").set_defaults(fn=cmd_monitor)
 
