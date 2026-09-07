@@ -10,15 +10,19 @@
 #include "EPD_Painter.h"
 
 #include <Fonts/FreeSansBold24pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 
 namespace display {
 
-const GFXfont* const FONT_TITLE = &FreeSansBold24pt7b;
+const GFXfont* const FONT_HERO  = &FreeSansBold24pt7b;
+const GFXfont* const FONT_TITLE = &FreeSansBold18pt7b;
 const GFXfont* const FONT_ITEM  = &FreeSansBold12pt7b;
 const GFXfont* const FONT_BODY  = &FreeSans12pt7b;
+const GFXfont* const FONT_LABEL = &FreeSansBold9pt7b;
 const GFXfont* const FONT_SMALL = &FreeSans9pt7b;
 
 // GFXcanvas8 with a caller-supplied (PSRAM) buffer. Its own constructor would
@@ -127,6 +131,13 @@ int textWidth(const char* s, const GFXfont* font) {
     return (int)w;
 }
 
+int capHeight(const GFXfont* font) {
+    int16_t x1, y1; uint16_t w, h;
+    g_canvas.setFont(font);
+    g_canvas.getTextBounds("H", 0, 100, &x1, &y1, &w, &h);
+    return (int)h;
+}
+
 void text(int x, int y, const char* s, const GFXfont* font, uint8_t color) {
     g_canvas.setFont(font);
     g_canvas.setTextColor(color);
@@ -154,6 +165,86 @@ void textFit(int x, int y, const char* s, const GFXfont* font, int maxWidth, uin
         char tmp[100];
         snprintf(tmp, sizeof tmp, "%s...", buf);
         if (textWidth(tmp, font) <= maxWidth) { text(x, y, tmp, font, color); return; }
+    }
+}
+
+void upper(char* out, size_t cap, const char* in) {
+    size_t n = 0;
+    for (; in[n] && n + 1 < cap; ++n) {
+        const char c = in[n];
+        out[n] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    out[n] = 0;
+}
+
+// --- tracked labels ----------------------------------------------------------
+static const int TRACK = 3;
+
+static int glyphAdvance(const GFXfont* font, unsigned char c) {
+    if (c < font->first || c > font->last) return 0;
+    return font->glyph[c - font->first].xAdvance;
+}
+
+int labelWidth(const char* s, const GFXfont* font) {
+    int total = -TRACK;
+    for (const unsigned char* p = (const unsigned char*)s; *p; ++p) {
+        unsigned char c = *p;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        total += glyphAdvance(font, c) + TRACK;
+    }
+    return total < 0 ? 0 : total;
+}
+
+void label(int x, int y, const char* s, const GFXfont* font, uint8_t color) {
+    g_canvas.setFont(font);
+    g_canvas.setTextColor(color);
+    g_canvas.setTextWrap(false);
+    for (const unsigned char* p = (const unsigned char*)s; *p; ++p) {
+        unsigned char c = *p;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        g_canvas.setCursor(x, y);
+        g_canvas.write(c);
+        x += glyphAdvance(font, c) + TRACK;
+    }
+}
+
+void labelCentered(int cx, int y, const char* s, const GFXfont* font, uint8_t color) {
+    label(cx - labelWidth(s, font) / 2, y, s, font, color);
+}
+
+// --- shapes -----------------------------------------------------------------
+void frame(int x, int y, int w, int h, int thick, uint8_t color) {
+    for (int e = 0; e < thick; ++e) g_canvas.drawRect(x + e, y + e, w - 2 * e, h - 2 * e, color);
+}
+
+void rule(int x, int y, int w, int thick, uint8_t color) {
+    g_canvas.fillRect(x, y, w, thick, color);
+}
+
+void tone50(int x, int y, int w, int h) {
+    if (!g_fb) return;
+    const int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+    const int x1 = x + w > W ? W : x + w, y1 = y + h > H ? H : y + h;
+    for (int yy = y0; yy < y1; ++yy) {
+        uint8_t* row = g_fb + (size_t)yy * W;
+        for (int xx = x0; xx < x1; ++xx)
+            if (((xx >> 1) + (yy >> 1)) & 1) row[xx] = BLACK;
+    }
+}
+
+void batteryIcon(int rightX, int cy, int pct, bool charging) {
+    const int bw = 36, bh = 18, nub = 3;
+    const int x = rightX - bw - nub, y = cy - bh / 2;
+    frame(x, y, bw, bh, 2, BLACK);
+    g_canvas.fillRect(x + bw, cy - 4, nub, 8, BLACK);
+    if (charging) {
+        // A bolt instead of the level: the percentage next to the icon says how full.
+        const int cx = x + bw / 2;
+        g_canvas.fillTriangle(cx + 4, y + 3, cx - 6, cy + 2, cx + 1, cy + 2, BLACK);
+        g_canvas.fillTriangle(cx - 4, y + bh - 4, cx + 6, cy - 2, cx - 1, cy - 2, BLACK);
+    } else if (pct >= 0) {
+        const int fw = (bw - 8) * (pct > 100 ? 100 : pct) / 100;
+        if (fw > 0) g_canvas.fillRect(x + 4, y + 4, fw, bh - 8, BLACK);
     }
 }
 

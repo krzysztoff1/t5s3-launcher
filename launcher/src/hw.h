@@ -32,6 +32,14 @@ bool touchOk();
 // One touch point in canvas coordinates (540x960 portrait), honouring the
 // persisted 180-degree flip. Returns false when nothing is pressed.
 bool touchRead(int& x, int& y);
+// The flip, changed at runtime (persist it through registry::setTouchFlip()).
+void setTouchFlip(bool on);
+// The GT911's capacitive key below the glass (OpenTrailPaper's "Home" key). The
+// driver reports it during touchRead(); this returns true once per press.
+bool homeKeyPressed();
+
+// PCF8563 wall clock; false when the RTC was never set.
+bool clock(int& hour, int& minute);
 
 void backlight(uint8_t level);   // 0..255 PWM on the PT4103 enable pin
 

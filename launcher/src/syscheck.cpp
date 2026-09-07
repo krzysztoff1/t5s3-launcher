@@ -18,6 +18,7 @@
 #include "display.h"
 #include "hw.h"
 #include "registry.h"
+#include "ui.h"
 #include "version.h"
 
 using namespace display;
@@ -29,33 +30,44 @@ static Line g_lines[24];
 static int  g_n = 0;
 static int  g_pass = 0, g_warn = 0, g_fail = 0;
 static char g_hint[96] = {0};
+static char g_hint2[64] = {0};
 
 static void redraw() {
     if (!display::ready()) return;
     GFXcanvas8& g = gfx();
     g.fillScreen(WHITE);
-    g.fillRect(0, 0, W, 72, BLACK);
-    text(24, 50, "System check", FONT_TITLE, WHITE);
-    int y = 112;
+    ui::statusBar("SYSTEM CHECK");
+    // One 40 px line per step. A FAIL inverts its line, a WARN tones it.
+    int y = 104;
     for (int i = 0; i < g_n; ++i) {
         const Line& l = g_lines[i];
         const bool bad = strcmp(l.status, "FAIL") == 0;
         const bool warn = strcmp(l.status, "WARN") == 0;
-        if (bad) g.fillRect(12, y - 22, W - 24, 30, LIGHT);
-        text(20, y, l.name, FONT_ITEM, BLACK);
-        text(160, y, l.status, FONT_ITEM, bad ? BLACK : (warn ? DARK : BLACK));
-        textFit(236, y, l.detail, FONT_SMALL, W - 250, BLACK);
-        y += 34;
+        if (bad) g.fillRect(0, y - 28, W, 40, BLACK);
+        else if (warn) g.fillRect(0, y - 28, W, 40, LIGHT);
+        const uint8_t ink = bad ? WHITE : BLACK;
+        text(24, y, l.name, FONT_ITEM, ink);
+        text(150, y, l.status, FONT_ITEM, ink);
+        textFit(232, y, l.detail, FONT_SMALL, W - 232 - 16, ink);
+        y += 40;
     }
     if (g_hint[0]) {
-        g.fillRect(12, H - 120, W - 24, 60, LIGHT);
-        textCentered(W / 2, H - 82, g_hint, FONT_BODY, BLACK);
+        // Bottom band: what the check wants from you, or the verdict.
+        const int by = H - 24 - 96;
+        g.fillRect(0, by, W, 96, BLACK);
+        if (g_hint2[0]) {
+            textCentered(W / 2, by + 44, g_hint, FONT_ITEM, WHITE);
+            textCentered(W / 2, by + 74, g_hint2, FONT_SMALL, WHITE);
+        } else {
+            textCentered(W / 2, by + 48 + capHeight(FONT_ITEM) / 2, g_hint, FONT_ITEM, WHITE);
+        }
     }
     paint();
 }
 
-static void hint(const char* h) {
+static void hint(const char* h, const char* h2 = nullptr) {
     strlcpy(g_hint, h ? h : "", sizeof g_hint);
+    strlcpy(g_hint2, h2 ? h2 : "", sizeof g_hint2);
     redraw();
 }
 
@@ -69,6 +81,7 @@ static void report(const char* name, const char* status, const char* fmt, ...) {
     if (!strcmp(status, "PASS")) g_pass++; else if (!strcmp(status, "WARN")) g_warn++; else g_fail++;
     Serial.printf("[syscheck] %s: %s - %s\n", name, status, l.detail);
     g_hint[0] = 0;
+    g_hint2[0] = 0;
     redraw();
 }
 
@@ -187,7 +200,7 @@ static void checkTouch(bool interactive) {
     int16_t rx = 0, ry = 0;
     hw::touch().getResolution(&rx, &ry);
     if (!interactive) { report("touch", "PASS", "GT911 ok, resolution %dx%d (no touch test)", rx, ry); return; }
-    hint("TOUCH THE SCREEN (8 s)");
+    hint("TOUCH THE SCREEN", "8 seconds");
     const uint32_t t0 = millis();
     int touches = 0, lx = -1, ly = -1; uint32_t lastPaint = 0;
     while (millis() - t0 < 8000) {
@@ -359,7 +372,7 @@ static void checkBle() {
 static void checkButtons(bool interactive) {
     if (!interactive) { report("buttons", "PASS", "BOOT %s, side %s (no press test)",
                                hw::bootButtonPressed() ? "down" : "up", hw::sideButtonPressed() ? "down" : "up"); return; }
-    hint("PRESS BOOT, THEN THE SIDE BUTTON (6 s)");
+    hint("PRESS BOOT, THEN THE SIDE BUTTON", "6 seconds");
     bool sawBoot = false, sawSide = false;
     const uint32_t t0 = millis();
     while (millis() - t0 < 6000 && !(sawBoot && sawSide)) {
@@ -402,14 +415,18 @@ void run(bool interactive) {
     Serial.printf("[syscheck] done: %d pass, %d warn, %d fail\n", g_pass, g_warn, g_fail);
     if (interactive) {
         char s[64];
-        snprintf(s, sizeof s, "%d pass, %d warn, %d fail - tap or press to leave", g_pass, g_warn, g_fail);
-        hint(s);
+        snprintf(s, sizeof s, "%d PASS  -  %d WARN  -  %d FAIL", g_pass, g_warn, g_fail);
+        hint(s, "Tap the screen or press a button to leave");
         const uint32_t t0 = millis();
         int x, y;
         while (millis() - t0 < 60000) {
-            if (hw::touchRead(x, y) || hw::bootButtonPressed() || hw::sideButtonPressed()) break;
+            if (hw::touchRead(x, y) || hw::homeKeyPressed() || hw::bootButtonPressed() || hw::sideButtonPressed()) break;
             delay(20);
         }
+        // Wait for the finger or button to lift, so the same press cannot land
+        // on whatever screen comes back.
+        const uint32_t t1 = millis();
+        while ((hw::touchRead(x, y) || hw::bootButtonPressed() || hw::sideButtonPressed()) && millis() - t1 < 2000) delay(20);
     }
 }
 

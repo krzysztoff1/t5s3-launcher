@@ -1,9 +1,12 @@
 #include "console.h"
 
 #include <Arduino.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "display.h"
 #include "hw.h"
+#include "launcher_api.h"
 #include "registry.h"
 #include "syscheck.h"
 #include "ui.h"
@@ -43,15 +46,17 @@ static void help() {
     Serial.println("  boot <ota_0|ota_1>            start an app now");
     Serial.println("  register <slot> \"<name>\" \"<version>\"   label a slot for the menu");
     Serial.println("  unregister <slot>             drop a slot's label");
-    Serial.println("  autostart on|off              cold boot goes straight to the last app");
-    Serial.println("  menu                          show the menu (brings the display up)");
+    Serial.println("  menu [home|settings]          show a menu screen (brings the display up)");
+    Serial.println("                                on screen: Settings holds touch flip, light, system check, sleep, flash mode");
     Serial.println("  syscheck [quick]              run the hardware check (quick = no touch/button steps)");
     Serial.println("  touchflip on|off              rotate touch input 180 degrees (persisted)");
     Serial.println("  nvs                           dump the launcher's NVS state");
     Serial.println("  forget                        wipe the launcher's NVS state");
+    Serial.println("  light <0-255>                 front light PWM duty, shared with every app");
     Serial.println("  sleep                         deep sleep (BOOT wakes)");
     Serial.println("  bootloader                    reboot into USB download mode");
     Serial.println("  reboot                        restart");
+    Serial.println("  screenshot                    dump the framebuffer (tools/flash.py screenshot writes a PNG)");
     Serial.println("  ver                           launcher version");
 }
 
@@ -64,7 +69,7 @@ static void list() {
                       registry::slotLabel(s.index), (unsigned)s.part->address, (unsigned)s.part->size,
                       s.valid ? 1 : 0, s.name, s.version, s.running ? " running" : "", s.last ? " last" : "");
     }
-    Serial.printf("[launcher] autostart=%s last=%d\n", registry::autostart() ? "on" : "off", registry::lastSlot());
+    Serial.printf("[launcher] last=%d (no autostart; the menu always shows on boot)\n", registry::lastSlot());
 }
 
 static bool onoff(const char* a, bool& out) {
@@ -78,6 +83,16 @@ static void handle(char* line) {
     char* argv[6];
     const int argc = tokenize(line, argv, 6);
     if (argc == 0) return;
+    if (!strcasecmp(argv[0], "light")) {
+        if (argc > 1) {
+            int d = atoi(argv[1]); if (d < 0) d = 0; if (d > 255) d = 255;
+            launcher::setFrontLight((uint8_t)d);
+            hw::backlight((uint8_t)d);
+        }
+        Serial.printf("[launcher] front light duty %u\n", (unsigned)launcher::frontLight());
+        ui::draw();
+        return;
+    }
     const char* cmd = argv[0];
     const char* a1 = argc > 1 ? argv[1] : nullptr;
 
@@ -102,15 +117,13 @@ static void handle(char* line) {
         registry::clearName(idx);
         Serial.printf("[launcher] unregistered %s\n", registry::slotLabel(idx));
         ui::draw();
-    } else if (!strcasecmp(cmd, "autostart")) {
-        bool on;
-        if (!onoff(a1, on)) { Serial.printf("[launcher] autostart is %s\n", registry::autostart() ? "on" : "off"); return; }
-        registry::setAutostart(on);
-        Serial.printf("[launcher] autostart %s\n", on ? "on" : "off");
-        ui::draw();
     } else if (!strcasecmp(cmd, "menu")) {
-        if (!ui::begin()) Serial.println("[launcher] display init failed");
-        else ui::draw();
+        if (ui::show(a1)) { /* drawn */ }
+        else if (!display::ready()) Serial.println("[launcher] display init failed");
+        else Serial.println("[launcher] menu [home|settings]");
+    } else if (!strcasecmp(cmd, "screenshot") || !strcasecmp(cmd, "shot")) {
+        if (!display::ready()) Serial.println("[screenshot] the display is not up (try `menu` first)");
+        else launcher::dumpScreen(display::gfx().getBuffer(), display::W, display::H);
     } else if (!strcasecmp(cmd, "syscheck")) {
         syscheck::run(!(a1 && !strcasecmp(a1, "quick")));
         ui::draw();
@@ -118,7 +131,9 @@ static void handle(char* line) {
         bool on;
         if (!onoff(a1, on)) { Serial.printf("[launcher] touchflip is %s\n", registry::touchFlip() ? "on" : "off"); return; }
         registry::setTouchFlip(on);
-        Serial.printf("[launcher] touchflip %s (takes effect after reboot)\n", on ? "on" : "off");
+        hw::setTouchFlip(on);
+        Serial.printf("[launcher] touchflip %s\n", on ? "on" : "off");
+        ui::draw();
     } else if (!strcasecmp(cmd, "nvs")) {
         registry::dump(Serial);
     } else if (!strcasecmp(cmd, "forget")) {

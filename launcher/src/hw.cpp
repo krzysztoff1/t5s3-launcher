@@ -17,6 +17,8 @@ static BQ27220           g_gauge;
 static TouchDrvGT911     g_touch;
 static bool g_ioOk = false, g_ppmOk = false, g_gaugeOk = false, g_touchOk = false;
 static bool g_i2c = false;
+static bool g_flip = false, g_flipLoaded = false;
+static volatile bool g_homeKey = false;
 
 ExtensionIOXL9555& expander() { return g_io; }
 XPowersPPM& charger() { return g_ppm; }
@@ -100,19 +102,53 @@ bool touchBegin() {
     g_touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_INT);
     g_touchOk = g_touch.begin(Wire, GT911_SLAVE_ADDRESS_L, BOARD_SDA, BOARD_SCL);
     if (!g_touchOk) g_touchOk = g_touch.begin(Wire, GT911_SLAVE_ADDRESS_H, BOARD_SDA, BOARD_SCL);
-    if (!g_touchOk) Serial.println("[hw] GT911 touch not found");
-    return g_touchOk;
+    if (!g_touchOk) { Serial.println("[hw] GT911 touch not found"); return false; }
+    // The key below the glass arrives as a callback from inside getPoint().
+    g_touch.setHomeButtonCallback([](void*) { g_homeKey = true; }, nullptr);
+    // The controller can hold a stale point from before the reset; drain it.
+    int16_t tx, ty;
+    for (int i = 0; i < 3; ++i) g_touch.getPoint(&tx, &ty, 1);
+    return true;
+}
+
+void setTouchFlip(bool on) { g_flip = on; g_flipLoaded = true; }
+
+bool homeKeyPressed() {
+    if (!g_homeKey) return false;
+    g_homeKey = false;
+    // The callback fires on every poll while the key is held: one press, one event.
+    static uint32_t last = 0;
+    const uint32_t now = millis();
+    if (now - last < 400) return false;
+    last = now;
+    return true;
 }
 
 bool touchRead(int& x, int& y) {
     if (!g_touchOk) return false;
     int16_t tx = 0, ty = 0;
     if (g_touch.getPoint(&tx, &ty, 1) == 0) return false;
-    static bool flip = registry::touchFlip();
-    if (flip) { tx = display::W - 1 - tx; ty = display::H - 1 - ty; }
+    if (!g_flipLoaded) setTouchFlip(registry::touchFlip());
+    if (g_flip) { tx = display::W - 1 - tx; ty = display::H - 1 - ty; }
     x = constrain((int)tx, 0, display::W - 1);
     y = constrain((int)ty, 0, display::H - 1);
     return true;
+}
+
+static int bcd(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
+
+bool clock(int& hour, int& minute) {
+    Wire.beginTransmission(ADDR_RTC);
+    Wire.write(0x02);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((int)ADDR_RTC, 7) != 7) return false;
+    uint8_t r[7];
+    for (int i = 0; i < 7; ++i) r[i] = Wire.read();
+    if (r[0] & 0x80) return false;                    // VL bit: clock integrity not guaranteed
+    if (2000 + bcd(r[6]) < 2024) return false;        // never set
+    hour = bcd(r[2] & 0x3F);
+    minute = bcd(r[1] & 0x7F);
+    return hour < 24 && minute < 60;
 }
 
 void backlight(uint8_t level) {
