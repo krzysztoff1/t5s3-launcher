@@ -21,4 +21,6 @@ check partitions.csv           apps/opentrailpaper/partitions_launcher.csv
 check launcher_api/launcher_api.h apps/opentrailpaper/src/launcher_api.h
 check partitions.csv           apps/_template/partitions_launcher.csv
 check launcher_api/launcher_api.h apps/_template/src/launcher_api.h
+check partitions.csv           apps/paperback/partitions_launcher.csv
+check launcher_api/launcher_api.h apps/paperback/src/launcher_api.h
 exit $status

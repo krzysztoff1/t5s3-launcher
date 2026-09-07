@@ -13,4 +13,5 @@ mkdir -p apps/opentrailpaper/vendor
 command -v pio >/dev/null || { echo "PlatformIO missing: uv tool install --python 3.13 platformio"; exit 1; }
 (cd launcher && pio pkg install)
 (cd apps/opentrailpaper && pio pkg install -e t5s3-launcher)
+(cd apps/paperback && pio pkg install)
 echo "bootstrap done"
