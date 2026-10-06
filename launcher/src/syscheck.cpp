@@ -18,6 +18,7 @@
 #include "display.h"
 #include "hw.h"
 #include "registry.h"
+#include "sdcard.h"
 #include "ui.h"
 #include "version.h"
 
@@ -221,18 +222,9 @@ static void checkTouch(bool interactive) {
     else report("touch", "WARN", "GT911 %dx%d ok, nobody touched it", rx, ry);
 }
 
-static bool g_spi = false;
-static void spiBegin() {
-    if (g_spi) return;
-    pinMode(BOARD_LORA_CS, OUTPUT); digitalWrite(BOARD_LORA_CS, HIGH);
-    pinMode(BOARD_SD_CS, OUTPUT);   digitalWrite(BOARD_SD_CS, HIGH);
-    SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI, BOARD_SD_CS);
-    g_spi = true;
-}
-
 static void checkSd() {
-    spiBegin();
-    if (!SD.begin(BOARD_SD_CS, SPI, 20000000)) { report("sd", "WARN", "no card / mount failed"); return; }
+    sdcard::unmount();                       // a fresh mount is part of the test
+    if (!sdcard::mount(true)) { report("sd", "WARN", "no card / mount failed"); return; }
     const uint8_t type = SD.cardType();
     const char* tname = type == CARD_MMC ? "MMC" : type == CARD_SD ? "SDSC" : type == CARD_SDHC ? "SDHC" : "?";
     const uint64_t sizeMB = SD.cardSize() / (1024 * 1024);
@@ -265,7 +257,7 @@ static void checkSd() {
     }
     report("sd", ok ? "PASS" : "FAIL", "%s %lluMB, %lluMB used, write %.0f KB/s read %.0f KB/s%s",
            tname, (unsigned long long)sizeMB, (unsigned long long)usedMB, wKB, rKB, ok ? "" : " (r/w test failed)");
-    SD.end();
+    // Left mounted: the SD app store reads the same card.
 }
 
 static bool nmeaValid(const char* s) {
@@ -326,7 +318,7 @@ static void checkGps() {
 }
 
 static void checkLora() {
-    spiBegin();
+    sdcard::spiBegin();
     static SX1262 radio = new Module(BOARD_LORA_CS, BOARD_LORA_IRQ, BOARD_LORA_RST, BOARD_LORA_BUSY);
     hw::radioPower(true);
     delay(200);
