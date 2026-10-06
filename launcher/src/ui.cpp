@@ -6,6 +6,7 @@
 #include <esp_idf_version.h>
 #include <esp_system.h>
 
+#include "appstore.h"
 #include "display.h"
 #include "hw.h"
 #include "launcher_api.h"
@@ -55,6 +56,20 @@ constexpr int BACK_Y         = FOOTER_BASE - BTN_H;             // 840
 constexpr int SHEET_Y        = 440;
 constexpr int SHEET_BTN1_Y   = 700, SHEET_BTN2_Y = 816;
 constexpr int BAND_Y         = 402, BAND_H = 116;               // banner()'s black band
+constexpr int ROWS_END       = FOOTER_BASE - 36;                // lowest a HOME row may reach
+
+// SD apps: a lighter row than a resident slot's, under a caption.
+constexpr int SD_ROW_H       = 116;
+constexpr int SD_CAPTION_H   = 48;
+constexpr int SD_PAGE_ROWS   = (BACK_Y - STATUS_H) / SD_ROW_H;  // 6 on the SD screen
+constexpr int INSTALL_SHEET_Y = 400;
+
+// The install screen's slot map: one cell per 128 KB of the slot.
+constexpr uint32_t MAP_CELL_BYTES = 128 * 1024;
+constexpr int MAP_COLS = 8, MAP_GAP = 6;
+constexpr int MAP_CELL_W = (CONTENT_W - (MAP_COLS - 1) * MAP_GAP) / MAP_COLS;   // 56
+constexpr int MAP_CELL_H = 40;
+constexpr int STEP_ROW_H = 56;
 
 constexpr uint32_t IDLE_SLEEP_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t HOLD_MS = 700;
@@ -69,13 +84,14 @@ static int lightLevel(uint8_t duty) {
     return best;
 }
 
-enum Screen : uint8_t { HOME, SETTINGS, SHEET_FLASH };
+enum Screen : uint8_t { HOME, SETTINGS, SHEET_FLASH, SDAPPS, SHEET_INSTALL };
 
 enum Action : uint8_t {
     ACT_NONE, ACT_BOOT, ACT_SETTINGS,
     ACT_TOUCHFLIP, ACT_LIGHT, ACT_LIGHT_DOWN, ACT_LIGHT_UP,
     ACT_SYSCHECK, ACT_SLEEP, ACT_FLASH, ACT_BACK,
     ACT_SHEET_CONFIRM, ACT_SHEET_CANCEL,
+    ACT_SDAPP, ACT_SDMORE, ACT_SDPAGE, ACT_INSTALL, ACT_INSTALL_CANCEL,
 };
 
 // Tap targets, registered while a screen draws so hit-testing and drawing
@@ -92,6 +108,17 @@ static char     g_notice[96] = {0};
 static char     g_slotName[4][32];          // names drawn on HOME, for the "Starting" banner
 static uint32_t g_lastInput = 0;
 static uint32_t g_touchIgnoreUntil = 0;
+// The SD store as last scanned. Rescanned when a screen that shows it is
+// entered or draw() is called from outside (console `put`/`rm`), not on every
+// focus move.
+static appstore::App   g_apps[appstore::MAX_APPS];
+static int             g_appCount = 0;
+static bool            g_storeDirty = true;
+static bool            g_cardOk = false;
+static int             g_sdPage = 0;
+static int             g_pending = -1;             // g_apps index the install sheet is about
+static appstore::Plan  g_pendingPlan;
+static Screen          g_sheetFrom = HOME;
 static bool     s_bootWas = false, s_sideWas = false, s_bootHeld = false, s_sideHeld = false;
 
 void setNotice(const char* msg) { strlcpy(g_notice, msg ? msg : "", sizeof g_notice); }
@@ -153,25 +180,47 @@ static void textLines2(int x, int y, int w, const char* s, const GFXfont* font, 
     textFit(x, y + lineH, rest, font, w, color);
 }
 
+// Word-wrapped body copy, at most maxLines lines (the last one ellipsised).
+// Returns the baseline after the last line drawn.
+static int textWrap(int x, int y, int w, const char* s, const GFXfont* font, int lineH, int maxLines,
+                    uint8_t color = BLACK) {
+    while (*s && maxLines-- > 0) {
+        if (maxLines == 0 || textWidth(s, font) <= w) { textFit(x, y, s, font, w, color); return y + lineH; }
+        char line[96];
+        strlcpy(line, s, sizeof line);
+        size_t cut = 0;
+        for (char* sp = strrchr(line, ' '); sp; sp = strrchr(line, ' ')) {
+            *sp = 0;
+            if (textWidth(line, font) <= w) { cut = sp - line; break; }
+        }
+        if (!cut) { textFit(x, y, s, font, w, color); return y + lineH; }
+        text(x, y, line, font, color);
+        s += cut + 1;
+        y += lineH;
+    }
+    return y;
+}
+
 // LIST ROW (148 px): title in caps over a sentence-case subtitle, the pair
 // centred as a block; a solid triangle at the right says "opens something";
 // 2 px rule below. `inverted` is the focused row: black all the way across.
-static void listRow(int y, const char* title, const char* sub, bool enabled, bool marker, bool inverted) {
+static void listRow(int y, const char* title, const char* sub, bool enabled, bool marker, bool inverted,
+                    int rowH = ROW_H) {
     GFXcanvas8& g = gfx();
     uint8_t fg = enabled ? BLACK : DARK;
-    if (inverted) { g.fillRect(0, y, W, ROW_H, BLACK); fg = WHITE; }
+    if (inverted) { g.fillRect(0, y, W, rowH, BLACK); fg = WHITE; }
     char up[48];
     upper(up, sizeof up, title);
     const int textW = CONTENT_W - 2 * CELL_PAD - (marker ? MARKER_W + CELL_PAD : 0);
     const int titleH = capHeight(FONT_TITLE), subH = capHeight(FONT_BODY), gap = 14;
-    const int top = y + (ROW_H - (titleH + gap + subH)) / 2;
+    const int top = y + (rowH - (titleH + gap + subH)) / 2;
     textFit(TEXT_X, top + titleH, up, FONT_TITLE, textW, fg);
     if (sub && sub[0]) textFit(TEXT_X, top + titleH + gap + subH, sub, FONT_BODY, textW, fg);
     if (marker) {
-        const int mx = CONTENT_X + CONTENT_W - CELL_PAD - MARKER_W, cy = y + ROW_H / 2;
+        const int mx = CONTENT_X + CONTENT_W - CELL_PAD - MARKER_W, cy = y + rowH / 2;
         g.fillTriangle(mx, cy - 14, mx, cy + 14, mx + MARKER_W, cy, fg);
     }
-    if (!inverted) rule(0, y + ROW_H - RULE, W, RULE);
+    if (!inverted) rule(0, y + rowH - RULE, W, RULE);
 }
 
 // SETTINGS ROW (108 px): caps label over a small subtitle; the caller draws the
@@ -248,6 +297,45 @@ static int noticeBand(int y) {
     return NOTICE_H;
 }
 
+// --- the SD store ---------------------------------------------------------------
+
+static void refreshStore() {
+    if (!g_storeDirty) return;
+    g_storeDirty = false;
+    g_cardOk = appstore::cardReady();
+    g_appCount = g_cardOk ? appstore::scan(g_apps, appstore::MAX_APPS) : 0;
+    if (g_pending >= g_appCount) g_pending = -1;
+}
+
+static const appstore::App* sdAppIn(int slot) {
+    for (int i = 0; i < g_appCount; ++i)
+        if (g_apps[i].installedIn == slot) return &g_apps[i];
+    return nullptr;
+}
+
+// One SD app as a row: installed ones open, the rest say what a tap costs.
+static void sdRow(int y, int i) {
+    const appstore::App& a = g_apps[i];
+    char sub[96], size[16];
+    appstore::formatSize(a.size, size, sizeof size);
+    if (a.problem[0]) {
+        listRow(y, a.name, a.problem, false, false, false, SD_ROW_H);
+        return;
+    }
+    if (a.installedIn >= 0) {
+        snprintf(sub, sizeof sub, "Installed in %s  -  open", registry::slotLabel(a.installedIn));
+    } else {
+        const uint32_t s = (appstore::estimateMs(a.size) + 999) / 1000;
+        snprintf(sub, sizeof sub, "Install & open  -  %s  -  about %u s", size, (unsigned)s);
+    }
+    listRow(y, a.name, sub, true, true, focused(ACT_SDAPP, i), SD_ROW_H);
+    addHit(0, y, W, SD_ROW_H, ACT_SDAPP, i);
+}
+
+static void sdCaption(int y, const char* caption) {
+    label(CONTENT_X, y + SD_CAPTION_H - 14, caption, FONT_LABEL, DARK);
+}
+
 // --- screens -----------------------------------------------------------------
 
 // HOME: status band, notice, one row per OTA slot, and the SETTINGS row pinned
@@ -270,8 +358,9 @@ static void drawHome() {
         if (s.index < 0) continue;
         char sub[96];
         if (s.valid) {
-            snprintf(sub, sizeof sub, "%s%sslot %s%s", s.version, s.version[0] ? "  -  " : "",
-                     registry::slotLabel(s.index), s.last ? "  -  last run" : "");
+            snprintf(sub, sizeof sub, "%s%sslot %s%s%s", s.version, s.version[0] ? "  -  " : "",
+                     registry::slotLabel(s.index), sdAppIn(s.index) ? "  -  from SD" : "",
+                     s.last ? "  -  last run" : "");
             listRow(y, s.name, sub, true, true, focused(ACT_BOOT, s.index));
             addHit(0, y, W, ROW_H, ACT_BOOT, s.index);
             if (s.index < 4) strlcpy(g_slotName[s.index], s.name, sizeof g_slotName[0]);
@@ -285,6 +374,27 @@ static void drawHome() {
     if (shown == 0) {
         text(TEXT_X, y + 80, "No OTA slots in the partition table.", FONT_BODY, BLACK);
         y += ROW_H;
+    }
+
+    // SD apps that are not in a slot right now. The installed ones already
+    // have their slot row above. When they do not all fit above the Settings
+    // row, the last place becomes "more", which opens the paged SD screen.
+    int waiting[appstore::MAX_APPS], nWaiting = 0;
+    for (int i = 0; i < g_appCount; ++i)
+        if (g_apps[i].installedIn < 0) waiting[nWaiting++] = i;
+    if (nWaiting > 0) {
+        sdCaption(y, "ON THE SD CARD");
+        y += SD_CAPTION_H;
+        const int room = (ROWS_END - ROW_H - y) / SD_ROW_H;
+        const int direct = nWaiting <= room ? nWaiting : room - 1;
+        for (int k = 0; k < direct; ++k, y += SD_ROW_H) sdRow(y, waiting[k]);
+        if (direct < nWaiting && room > 0) {
+            char sub[48];
+            snprintf(sub, sizeof sub, "%d more on the SD card", nWaiting - direct);
+            listRow(y, "More apps", sub, true, true, focused(ACT_SDMORE), SD_ROW_H);
+            addHit(0, y, W, SD_ROW_H, ACT_SDMORE);
+            y += SD_ROW_H;
+        }
     }
 
     // Settings flows right after the app rows, so the home screen reads as one
@@ -379,6 +489,212 @@ static void drawSheet() {
     addHit(0, 0, W, SHEET_Y, ACT_SHEET_CANCEL, 0, false);   // a tap on the scrim cancels
 }
 
+// SD CARD: every app in the store, installed or not, paged.
+static void drawSdApps() {
+    GFXcanvas8& g = gfx();
+    g.fillScreen(WHITE);
+    g_hitCount = 0;
+    statusBar("SD CARD");
+    const int pages = g_appCount <= SD_PAGE_ROWS ? 1 : (g_appCount + SD_PAGE_ROWS - 2) / (SD_PAGE_ROWS - 1);
+    const int perPage = pages == 1 ? SD_PAGE_ROWS : SD_PAGE_ROWS - 1;
+    if (g_sdPage >= pages) g_sdPage = 0;
+    int y = STATUS_H;
+    if (!g_cardOk || g_appCount == 0) {
+        textWrap(TEXT_X, y + 80, CONTENT_W - 2 * CELL_PAD,
+                 g_cardOk ? "No apps on the card. Put each in /apps/<id>/ as firmware.bin and app.ini, "
+                            "or use tools/flash.py sdapp."
+                          : "No SD card.", FONT_BODY, 30, 4);
+    }
+    for (int i = g_sdPage * perPage; i < g_appCount && i < (g_sdPage + 1) * perPage; ++i, y += SD_ROW_H) sdRow(y, i);
+    if (pages > 1) {
+        char sub[32];
+        snprintf(sub, sizeof sub, "Page %d of %d", g_sdPage + 1, pages);
+        listRow(y, "Next page", sub, true, true, focused(ACT_SDPAGE), SD_ROW_H);
+        addHit(0, y, W, SD_ROW_H, ACT_SDPAGE);
+    }
+    wideButton(BACK_Y, "Back", focused(ACT_BACK), ACT_BACK, true);
+}
+
+static void drawScreen(Screen s);
+
+// Install confirmation over HOME or the SD screen: what goes where, how long,
+// and what it replaces. Replacing something the card cannot restore is said
+// in bold, and the sheet then defaults to Cancel (see defaultFocus()).
+static void drawInstallSheet() {
+    drawScreen(g_sheetFrom);
+    g_hitCount = 0;
+    GFXcanvas8& g = gfx();
+    tone50(0, STATUS_H, W, INSTALL_SHEET_Y - STATUS_H);
+    g.fillRect(0, INSTALL_SHEET_Y, W, H - INSTALL_SHEET_Y, WHITE);
+    rule(0, INSTALL_SHEET_Y, W, 6);
+    if (g_pending < 0) return;
+    const appstore::App& a = g_apps[g_pending];
+    const appstore::Plan& p = g_pendingPlan;
+    const int textW = CONTENT_W;
+    int y = INSTALL_SHEET_Y + 6 + 40;
+    label(CONTENT_X, y, "INSTALL FROM THE SD CARD", FONT_LABEL, BLACK);
+    y += 8 + capHeight(FONT_HERO);
+    char up[40];
+    upper(up, sizeof up, a.name);
+    textFit(CONTENT_X, y, up, FONT_HERO, textW, BLACK);
+    y += 20 + capHeight(FONT_BODY);
+
+    char line[160], size[16];
+    appstore::formatSize(a.size, size, sizeof size);
+    snprintf(line, sizeof line, "%s%s%s into %s, about %u s.", a.version, a.version[0] ? "  -  " : "", size,
+             registry::slotLabel(p.slot), (unsigned)((p.estimateMs + 999) / 1000));
+    y = textWrap(CONTENT_X, y, textW, line, FONT_BODY, 28, 2);
+    if (p.lossy) {
+        snprintf(line, sizeof line, "Replaces %s, which is NOT on the SD card. Only tools/flash.py can bring it back.",
+                 p.replaces);
+        y = textWrap(CONTENT_X, y, textW, line, FONT_ITEM, 28, 3);
+    } else if (p.replaces[0]) {
+        snprintf(line, sizeof line, "Replaces %s; it stays on the SD card.", p.replaces);
+        y = textWrap(CONTENT_X, y, textW, line, FONT_BODY, 28, 2);
+    } else {
+        y = textWrap(CONTENT_X, y, textW, "The slot is empty.", FONT_BODY, 28, 1);
+    }
+    if (p.slot == 0) textWrap(CONTENT_X, y, textW, "ota_0 is OpenTrailPaper's home slot.", FONT_BODY, 28, 1);
+    wideButton(SHEET_BTN1_Y, "Install & open", focused(ACT_INSTALL), ACT_INSTALL);
+    wideButton(SHEET_BTN2_Y, "Cancel", focused(ACT_INSTALL_CANCEL), ACT_INSTALL_CANCEL);
+    addHit(0, 0, W, INSTALL_SHEET_Y, ACT_INSTALL_CANCEL, 0, false);
+}
+
+// --- install progress -------------------------------------------------------------
+//
+// Variant B, the "slot map": the target slot drawn as a grid, one cell per
+// 128 KB. Cells inside the image start as outlines and fill black as they are
+// written; the cell being written is grey; the rest of the slot, which the
+// image does not use, is a light tone. Under it a five-step checklist. One
+// repaint per cell, which on this panel is a few hundred milliseconds of a
+// multi-second copy.
+
+struct InstallView {
+    const appstore::App* app;
+    int      slot;
+    bool     start;
+    appstore::Phase phase;
+    uint32_t done, total;
+    int      cellsShown;          // cells filled at the last repaint
+    int      pctLogged;           // last 10 % step printed on serial
+    uint32_t t0;
+    const char* error;
+};
+
+static void checkMark(int x, int y, int size, uint8_t color) {
+    // A thick tick: two strokes, drawn as offset lines.
+    GFXcanvas8& g = gfx();
+    for (int t = -2; t <= 2; ++t) {
+        g.drawLine(x + size * 2 / 10, y + size / 2 + t, x + size * 4 / 10, y + size * 7 / 10 + t, color);
+        g.drawLine(x + size * 4 / 10, y + size * 7 / 10 + t, x + size * 8 / 10, y + size * 3 / 10 + t, color);
+    }
+}
+
+static void drawInstall(const InstallView& v) {
+    GFXcanvas8& g = gfx();
+    g.fillScreen(WHITE);
+    g_hitCount = 0;
+    statusBar("INSTALLING");
+    const appstore::App& a = *v.app;
+    const esp_partition_t* part = registry::otaPartition(v.slot);
+    const uint32_t slotBytes = part ? part->size : a.size;
+
+    int y = STATUS_H + 44;
+    char cap[48];
+    snprintf(cap, sizeof cap, "SD CARD  >  %s", registry::slotLabel(v.slot));
+    char capUp[48];
+    upper(capUp, sizeof capUp, cap);
+    label(CONTENT_X, y, capUp, FONT_LABEL, DARK);
+    y += 12 + capHeight(FONT_HERO);
+    char up[40];
+    upper(up, sizeof up, a.name);
+    textFit(CONTENT_X, y, up, FONT_HERO, CONTENT_W, BLACK);
+    y += 18 + capHeight(FONT_BODY);
+    char size[16], line[96];
+    appstore::formatSize(a.size, size, sizeof size);
+    snprintf(line, sizeof line, "%s%s%s", a.version, a.version[0] ? "  -  " : "", size);
+    text(CONTENT_X, y, line, FONT_BODY, BLACK);
+
+    // The slot map.
+    const int cells = (int)((slotBytes + MAP_CELL_BYTES - 1) / MAP_CELL_BYTES);
+    const int imageCells = (int)((a.size + MAP_CELL_BYTES - 1) / MAP_CELL_BYTES);
+    const bool writing = v.phase == appstore::WRITE;
+    const int written = v.phase > appstore::WRITE ? imageCells
+                      : writing ? (int)(v.done / MAP_CELL_BYTES) + (v.done == a.size ? 1 : 0) : 0;
+    const int mapTop = y + 28;
+    for (int i = 0; i < cells; ++i) {
+        const int cx = CONTENT_X + 1 + (i % MAP_COLS) * (MAP_CELL_W + MAP_GAP);
+        const int cy = mapTop + (i / MAP_COLS) * (MAP_CELL_H + MAP_GAP);
+        if (i < written)                          g.fillRect(cx, cy, MAP_CELL_W, MAP_CELL_H, BLACK);
+        else if (writing && i == written)         { g.fillRect(cx, cy, MAP_CELL_W, MAP_CELL_H, DARK); }
+        else if (i < imageCells)                  frame(cx, cy, MAP_CELL_W, MAP_CELL_H, RULE, BLACK);
+        else                                      g.fillRect(cx, cy, MAP_CELL_W, MAP_CELL_H, LIGHT);
+    }
+    const int mapRows = (cells + MAP_COLS - 1) / MAP_COLS;
+    y = mapTop + mapRows * (MAP_CELL_H + MAP_GAP) - MAP_GAP + 30;
+    char slotS[16];
+    appstore::formatSize(slotBytes, slotS, sizeof slotS);
+    snprintf(line, sizeof line, "%s slot  -  the app takes %u of %u blocks", slotS, imageCells, cells);
+    text(CONTENT_X, y, line, FONT_SMALL, DARK);
+    if (writing && v.total) {
+        snprintf(line, sizeof line, "%u%%", (unsigned)((uint64_t)v.done * 100 / v.total));
+        textRight(CONTENT_X + CONTENT_W, y, line, FONT_ITEM, BLACK);
+    }
+
+    // The checklist.
+    static const char* const kSteps[appstore::PHASES] = {
+        "Read the SD card", "Write the slot", "Verify the image", "Register in the menu", "Start the app"};
+    y += 28;
+    const int box = 32;
+    for (int i = 0; i < appstore::PHASES; ++i, y += STEP_ROW_H) {
+        const char* name = (i == appstore::START && !v.start) ? "Back to the menu" : kSteps[i];
+        const int by = y + (STEP_ROW_H - box) / 2;
+        const bool done = i < v.phase, now = i == v.phase;
+        if (done) {
+            g.fillRect(CONTENT_X, by, box, box, BLACK);
+            checkMark(CONTENT_X, by, box, WHITE);
+        } else if (now && v.error) {
+            g.fillRect(CONTENT_X, by, box, box, BLACK);
+            textCentered(CONTENT_X + box / 2, by + box / 2 + capHeight(FONT_ITEM) / 2, "!", FONT_ITEM, WHITE);
+        } else {
+            frame(CONTENT_X, by, box, box, RULE, BLACK);
+            if (now) g.fillRect(CONTENT_X + 8, by + 8, box - 16, box - 16, DARK);
+        }
+        const int base = y + STEP_ROW_H / 2 + capHeight(FONT_ITEM) / 2;
+        text(CONTENT_X + box + CELL_PAD, base, name, now || done ? FONT_ITEM : FONT_BODY, now || done ? BLACK : DARK);
+        if (now && i == appstore::WRITE && v.total && v.done) {
+            char left[24];
+            const uint32_t el = millis() - v.t0;
+            const uint32_t rest = (uint32_t)((uint64_t)el * (v.total - v.done) / v.done / 1000);
+            snprintf(left, sizeof left, "%u s left", (unsigned)rest + 1);
+            textRight(CONTENT_X + CONTENT_W, base, left, FONT_SMALL, DARK);
+        }
+    }
+    if (v.error) textWrap(CONTENT_X, y + 8, CONTENT_W, v.error, FONT_BODY, 28, 2);
+    else textCentered(W / 2, FOOTER_BASE, "Keep the SD card in and the power on.", FONT_SMALL, DARK);
+    paint();
+}
+
+static void onInstallProgress(appstore::Phase phase, uint32_t done, uint32_t total, void* ctx) {
+    InstallView& v = *(InstallView*)ctx;
+    const bool newPhase = phase != v.phase;
+    v.phase = phase;
+    v.done = done;
+    v.total = total;
+    if (phase == appstore::WRITE && total) {
+        const int pct = (int)((uint64_t)done * 100 / total) / 10 * 10;
+        if (pct != v.pctLogged) { v.pctLogged = pct; Serial.printf("[install] write %d%%\n", pct); }
+    } else if (newPhase) {
+        Serial.printf("[install] %s\n", appstore::phaseName(phase));
+    }
+    if (!g_ready) return;
+    const int cells = phase == appstore::WRITE ? (int)(done / MAP_CELL_BYTES) : -1;
+    if (newPhase || cells != v.cellsShown) {
+        v.cellsShown = cells;
+        drawInstall(v);
+    }
+}
+
 void banner(const char* title, const char* line) {
     if (!display::begin()) return;
     GFXcanvas8& g = gfx();
@@ -391,14 +707,27 @@ void banner(const char* title, const char* line) {
     paint();
 }
 
-void draw() {
-    if (!g_ready) return;
-    switch (g_screen) {
-        case HOME:        drawHome(); break;
-        case SETTINGS:    drawSettings(); break;
-        case SHEET_FLASH: drawSheet(); break;
+static void drawScreen(Screen s) {
+    switch (s) {
+        case HOME:          drawHome(); break;
+        case SETTINGS:      drawSettings(); break;
+        case SHEET_FLASH:   drawSheet(); break;
+        case SDAPPS:        drawSdApps(); break;
+        case SHEET_INSTALL: drawInstallSheet(); break;
     }
+}
+
+// Redraw without touching the card (focus moves, toggles).
+static void render() {
+    if (!g_ready) return;
+    if (g_screen == HOME || g_screen == SDAPPS) refreshStore();
+    drawScreen(g_screen);
     paint();
+}
+
+void draw() {
+    g_storeDirty = true;   // called from outside: the card may have changed (`put`, `rm`)
+    render();
 }
 
 // --- navigation ----------------------------------------------------------------
@@ -412,13 +741,74 @@ static void defaultFocus() {
         if (last >= 0 && registry::otaPartition(last)) { g_focusAct = ACT_BOOT; g_focusArg = last; }
     } else if (g_screen == SHEET_FLASH) {
         g_focusAct = ACT_SHEET_CANCEL;   // the safe default for a blind SELECT
+    } else if (g_screen == SHEET_INSTALL) {
+        // A blind SELECT may install into a free or SD-backed slot, never
+        // over something the card cannot restore.
+        g_focusAct = g_pendingPlan.needsConfirm ? ACT_INSTALL_CANCEL : ACT_INSTALL;
     }
 }
 
 static void showScreen(Screen s) {
+    if (s == HOME || s == SDAPPS) g_storeDirty = true;
     g_screen = s;
     defaultFocus();
-    draw();
+    render();
+}
+
+static void bootSlot(int slot, const char* name) {
+    banner("Starting", name);
+    hw::backlight(0);                    // the app brings the light back up itself
+    registry::boot(slot, esp_reset_reason());
+    hw::backlight(launcher::frontLight());
+    setNotice("Could not start that slot.");
+    showScreen(HOME);
+}
+
+void installAndOpen(const appstore::App& app, const appstore::Plan& plan, bool start) {
+    begin();   // the progress is worth seeing; without a display it runs on serial alone
+    if (plan.already) {
+        Serial.printf("[install] %s is already in %s\n", app.name, registry::slotLabel(plan.slot));
+        if (start) bootSlot(plan.slot, app.name);
+        return;
+    }
+    InstallView v{&app, plan.slot, start, appstore::READ, 0, 0, -2, -1, millis(), nullptr};
+    if (g_ready) drawInstall(v);
+    char err[96] = {0};
+    const bool ok = appstore::install(app, plan.slot, onInstallProgress, &v, err, sizeof err);
+    g_storeDirty = true;
+    if (!ok) {
+        v.error = err;
+        if (g_ready) { drawInstall(v); delay(2500); }
+        char note[96];
+        snprintf(note, sizeof note, "Install failed: %s", err);
+        setNotice(note);
+        showScreen(HOME);
+        return;
+    }
+    if (!start) {
+        Serial.printf("[install] %s is in %s; not starting it\n", app.name, registry::slotLabel(plan.slot));
+        char note[96];
+        snprintf(note, sizeof note, "%s installed in %s.", app.name, registry::slotLabel(plan.slot));
+        setNotice(note);
+        showScreen(HOME);
+        return;
+    }
+    onInstallProgress(appstore::START, 0, 0, &v);
+    hw::backlight(0);
+    registry::boot(plan.slot, esp_reset_reason());
+    hw::backlight(launcher::frontLight());
+    setNotice("Installed, but could not start that slot.");
+    showScreen(HOME);
+}
+
+// Tapping an SD app: open it if a slot has it, otherwise ask first.
+static void pickSdApp(int i) {
+    if (i < 0 || i >= g_appCount || g_apps[i].problem[0]) return;
+    g_pending = i;
+    g_pendingPlan = appstore::plan(g_apps[i]);
+    if (g_pendingPlan.already) { bootSlot(g_pendingPlan.slot, g_apps[i].name); return; }
+    g_sheetFrom = g_screen;
+    showScreen(SHEET_INSTALL);
 }
 
 static void setLight(int level) {
@@ -431,23 +821,27 @@ static void setLight(int level) {
 
 static void activate(Action a, int arg) {
     switch (a) {
-    case ACT_BOOT: {
-        const char* name = (arg >= 0 && arg < 4 && g_slotName[arg][0]) ? g_slotName[arg] : registry::slotLabel(arg);
-        banner("Starting", name);
-        hw::backlight(0);                    // the app brings the light back up itself
-        registry::boot(arg, esp_reset_reason());
-        hw::backlight(launcher::frontLight());
-        setNotice("Could not start that slot.");
-        showScreen(HOME);
+    case ACT_BOOT:
+        bootSlot(arg, (arg >= 0 && arg < 4 && g_slotName[arg][0]) ? g_slotName[arg] : registry::slotLabel(arg));
         break;
-    }
+    case ACT_SDAPP:   pickSdApp(arg); break;
+    case ACT_SDMORE:  g_sdPage = 0; showScreen(SDAPPS); break;
+    case ACT_SDPAGE:  g_sdPage++; g_focusAct = ACT_SDPAGE; render(); break;
+    case ACT_INSTALL_CANCEL: showScreen(g_sheetFrom); break;
+    case ACT_INSTALL:
+        if (g_pending >= 0) {
+            static appstore::App app;          // g_apps is rescanned on the way back to HOME
+            app = g_apps[g_pending];
+            installAndOpen(app, g_pendingPlan, true);
+        }
+        break;
     case ACT_SETTINGS:  showScreen(SETTINGS); break;
     case ACT_BACK:      showScreen(HOME); break;
     case ACT_TOUCHFLIP: {
         const bool on = !registry::touchFlip();
         registry::setTouchFlip(on);
         hw::setTouchFlip(on);
-        draw();
+        render();
         break;
     }
     case ACT_LIGHT:      setLight((lightLevel(launcher::frontLight()) + 1) % 4); break;
@@ -456,7 +850,7 @@ static void activate(Action a, int arg) {
     case ACT_SYSCHECK:
         syscheck::run(true);
         g_touchIgnoreUntil = millis() + 800;   // the tap that ended the check must not land here
-        draw();
+        draw();                                // the check remounted the card
         break;
     case ACT_SLEEP:
         banner("Sleeping", "Press BOOT to wake");
@@ -484,9 +878,11 @@ static void onTap(int x, int y) {
 
 static void onBack() {
     switch (g_screen) {
-        case SHEET_FLASH: showScreen(SETTINGS); break;
-        case SETTINGS:    showScreen(HOME); break;
-        case HOME:        break;
+        case SHEET_FLASH:   showScreen(SETTINGS); break;
+        case SHEET_INSTALL: showScreen(g_sheetFrom); break;
+        case SETTINGS:      showScreen(HOME); break;
+        case SDAPPS:        showScreen(HOME); break;
+        case HOME:          break;
     }
 }
 
@@ -494,12 +890,12 @@ static void onSelect() {
     const int i = focusIndex();
     if (i >= 0) { activate(g_hits[i].action, g_hits[i].arg); return; }
     focusNext();   // nothing focused yet: the first hold just picks the first item
-    draw();
+    render();
 }
 
 static void onNext() {
     focusNext();
-    draw();
+    render();
 }
 
 bool begin() {
@@ -524,6 +920,7 @@ bool show(const char* name) {
     if (!begin()) return false;
     if (!name || !*name || !strcasecmp(name, "home")) { showScreen(HOME); return true; }
     if (!strcasecmp(name, "settings")) { showScreen(SETTINGS); return true; }
+    if (!strcasecmp(name, "sd")) { g_sdPage = 0; showScreen(SDAPPS); return true; }
     return false;
 }
 

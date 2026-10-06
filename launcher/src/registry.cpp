@@ -220,13 +220,48 @@ void forgetAll() {
     p.end();
 }
 
+static uint8_t g_digest[16][32];
+static uint8_t g_digestState[16];   // 0 unknown, 1 valid, 2 no image
+
+bool slotDigest(int index, uint8_t out[32]) {
+    if (index < 0 || index > 15) return false;
+    if (g_digestState[index] == 0) {
+        const esp_partition_t* part = otaPartition(index);
+        esp_app_desc_t desc;
+        const bool ok = part && esp_ota_get_partition_description(part, &desc) == ESP_OK &&
+                        esp_partition_get_sha256(part, g_digest[index]) == ESP_OK;
+        g_digestState[index] = ok ? 1 : 2;
+    }
+    if (g_digestState[index] != 1) return false;
+    memcpy(out, g_digest[index], 32);
+    return true;
+}
+
+void forgetDigests() { memset(g_digestState, 0, sizeof g_digestState); }
+
+uint16_t installRate() {
+    Preferences p;
+    if (!open(p, true)) return 0;
+    uint16_t v = p.getUShort("inst_kbps", 0);
+    p.end();
+    return v;
+}
+
+void setInstallRate(uint16_t kbps) {
+    Preferences p;
+    if (!open(p, false)) return;
+    p.putUShort("inst_kbps", kbps);
+    p.end();
+}
+
 void dump(Print& out) {
     Preferences p;
     if (!open(p, true)) { out.println("[launcher] nvs: namespace not available"); return; }
-    out.printf("[launcher] nvs: last_slot=%d autostart=%u crashes=%u armed=%u show_menu=%u tflip=%u\n",
+    out.printf("[launcher] nvs: last_slot=%d autostart=%u crashes=%u armed=%u show_menu=%u tflip=%u inst_kbps=%u\n",
                p.isKey("last_slot") ? p.getUChar("last_slot") : -1,
                p.getUChar("autostart", 1), p.getUChar("crashes", 0),
-               p.getUChar("armed", 0), p.getUChar("show_menu", 0), p.getUChar("tflip", 0));
+               p.getUChar("armed", 0), p.getUChar("show_menu", 0), p.getUChar("tflip", 0),
+               p.getUShort("inst_kbps", 0));
     for (int i = 0; i < 16; ++i) {
         char key[8];
         snprintf(key, sizeof key, "n%d", i);

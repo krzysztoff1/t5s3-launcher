@@ -6,6 +6,8 @@
 //   "[launcher] menu"        when the menu is on screen
 //   "[syscheck] done"        at the end of `syscheck`
 //   "[screenshot] end"       after the base64 framebuffer dump of `screenshot`
+//   "[put] ack" / "[put] done" / "[put] FAILED"   the `put` file transfer
+//   "[install] done" / "[install] FAILED"         after `install` (then "[launcher] booting")
 namespace console {
 void poll();
 // True once any byte has arrived on the console (vestigial; kept for callers).

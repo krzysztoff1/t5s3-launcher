@@ -42,6 +42,15 @@ void setTouchFlip(bool on);
 void setName(int index, const char* name, const char* version);
 void clearName(int index);
 void forgetAll();
+// SHA-256 of the image in ota_<index> (the digest every image carries at its
+// end). Cached per boot; false for an empty slot. Call forgetDigests() after a
+// slot is written.
+bool slotDigest(int index, uint8_t out[32]);
+void forgetDigests();
+// Measured SD-install throughput in KB/s, for the "about N s" estimates; 0 if
+// nothing has been installed yet.
+uint16_t installRate();
+void setInstallRate(uint16_t kbps);
 void dump(Print& out);
 
 }  // namespace registry
