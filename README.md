@@ -170,6 +170,12 @@ changes nothing, the battery keeps running what is on screen.
   target is at least 88 px tall. BOOT short-press moves a highlight, BOOT held
   selects; the side button moves it, held it goes back; the capacitive key
   below the glass also goes back.
+* **Apps on the SD card**: below the slots, HOME lists the apps in the card's
+  `/apps/` store that are not in a slot. Tap one, and a sheet says how big it
+  is, where it goes (normally `ota_1`), how long it takes and what it replaces.
+  *Install & open* copies it in, with the slot drawn as a map that fills block
+  by block, then starts it. An app already in a slot just starts. Any number of
+  apps can live on the card; two at a time are on the device.
 * **Settings**: a second screen behind the *Settings* row holds the touch flip,
   the shared front light, the system check, sleep and flash mode; the battery
   reading and build string sit at its foot. Flash mode asks first.
@@ -184,7 +190,10 @@ changes nothing, the battery keeps running what is on screen.
 ## Adding apps
 
 See [docs/adding-an-app.md](docs/adding-an-app.md) — install any image with
-`tools/flash.py app`, or copy `apps/_template`. Working with Claude Code? The
+`tools/flash.py app`, or copy `apps/_template`. To keep an app on the SD card
+instead of in a slot: `tools/flash.py sdapp firmware.bin --name "My app"
+--version 1.0 --install`, or copy `firmware.bin` and an `app.ini` (`name = My
+app`) into `/apps/myapp/` with a card reader. See [docs/boot-flow.md](docs/boot-flow.md#apps-on-the-sd-card). Working with Claude Code? The
 repo's `CLAUDE.md` is the runbook, and `/install-app`, `/new-app`,
 `/device-check` are ready-made prompts.
 
