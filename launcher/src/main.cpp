@@ -61,6 +61,9 @@ static void showMenu() {
 
 void setup() {
     const bool reclaimed = reclaimUsbPhy();
+    // `put` streams files in 4 KB acknowledged chunks; the default 256-byte RX
+    // queue would drop most of each one.
+    Serial.setRxBufferSize(8192);
     Serial.begin(115200);
     delay(50);
     hw::beginI2C();

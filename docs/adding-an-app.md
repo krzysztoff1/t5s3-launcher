@@ -21,6 +21,21 @@ Slot rule: `ota_0` and `ota_1` are OpenTrailPaper's pair (it self-updates
 between them). Installing something else into `ota_1` is fine as long as you
 accept OpenTrailPaper's next update may replace it.
 
+## Keep it on the SD card instead
+
+```sh
+tools/flash.py sdapp path/to/firmware.bin --name "Name" --version v1.0 --install
+```
+
+The image goes to `/apps/<id>/` on the card (`firmware.bin` plus a small
+`app.ini`; a card reader works too), and the launcher copies it into a slot
+(`ota_1` unless `app.ini` says otherwise) when you pick it on HOME, then starts
+it. Picking it again while it is still in the slot starts it with no copy. Any
+number of apps fit this way; they take turns in the slot. An image runs from
+either slot whatever its `board_upload.offset_address` says, because the MMU
+maps it. The details and the slot policy are in
+[boot-flow.md](boot-flow.md#apps-on-the-sd-card).
+
 ## Create a new app
 
 ```sh

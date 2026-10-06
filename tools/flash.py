@@ -17,6 +17,10 @@ Run it directly (uv resolves pyserial + esptool on first use):
     tools/flash.py follow                      # after a manual reset: stream whatever comes up
     tools/flash.py syscheck                    # run the built-in system check, print results
     tools/flash.py screenshot menu.png         # PNG of what is on the e-paper right now
+    tools/flash.py put notes.txt /notes.txt    # copy a file onto the SD card over USB
+    tools/flash.py sdapp fw.bin --name Paperback --version 0.3.0 --install
+                                               # put an app in the SD store (/apps/<id>/), install it
+    tools/flash.py install paperback           # install an SD app into its slot and start it
     tools/flash.py monitor                     # plain serial monitor (Ctrl-C to stop)
 
 Design notes
@@ -40,7 +44,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import os
+import re
 import subprocess
 import sys
 import struct
@@ -262,12 +268,13 @@ def console_port(timeout: float = CONSOLE_PORT_TIMEOUT) -> str:
     return wait_for(find_any_port, timeout, "a console port")
 
 
-def console(text: str | None, wait: float, stop: str | None = None,
+def console(text: str | None, wait: float, stop: str | tuple[str, ...] | None = None,
             port: str | None = None, quiet: bool = False) -> str:
     """Send one line (or nothing) and echo what comes back for `wait` seconds.
 
-    Stops early once a line contains `stop`. Returns everything received.
+    Stops early once a line contains `stop` (or any of them). Returns everything received.
     """
+    stops = (stop,) if isinstance(stop, str) else (stop or ())
     port = port or console_port()
     out: list[str] = []
     try:
@@ -289,7 +296,7 @@ def console(text: str | None, wait: float, stop: str | None = None,
                     out.append(decoded)
                     if not quiet:
                         print(decoded, flush=True)
-                    if stop and stop in decoded:
+                    if any(x in decoded for x in stops):
                         return "\n".join(out)
     except (serial.SerialException, OSError):
         # The device reset (or re-enumerated) under us; what we have is what there is.
@@ -462,6 +469,134 @@ def cmd_syscheck(args) -> int:
     return 0
 
 
+# --- SD card: put, the app store ------------------------------------------------
+# `put <path> <bytes>` is OpenTrailPaper's protocol, which the launcher speaks
+# too: the device answers "[put] send N raw bytes now, K per ack", then wants K
+# bytes at a time and says "[put] ack" after each block but the last, because
+# USB-CDC drops whatever does not fit its RX queue. The launcher's K is 4096.
+def put_bytes(data: bytes, dest: str, port: str | None = None) -> None:
+    port = port or console_port()
+    with serial.Serial(port, CONSOLE_BAUD, timeout=0.2) as s:
+        buf = b""
+
+        def wait_line(prefixes: tuple[str, ...], seconds: float) -> str:
+            nonlocal buf
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    text = line.decode(errors="replace").strip()
+                    if text.startswith(prefixes):
+                        return text
+                buf += s.read(512)
+            raise SystemExit(f"[flash] no reply from the device while putting {dest}")
+
+        time.sleep(0.3)
+        s.reset_input_buffer()
+        s.write(f"\nput {dest} {len(data)}\n".encode())
+        s.flush()
+        reply = wait_line(("[put]", "[launcher] unknown", "[cmd] unknown"), 10.0)
+        m = re.search(r"send (\d+) raw bytes now, (\d+) per ack", reply)
+        if not m:
+            raise SystemExit(f"[flash] the device would not take the file: {reply}")
+        chunk = int(m.group(2))
+        t0 = time.monotonic()
+        sent = 0
+        while sent < len(data):
+            block = data[sent:sent + chunk]
+            s.write(block)
+            s.flush()
+            sent += len(block)
+            if sent < len(data):
+                reply = wait_line(("[put]",), 15.0)
+                if reply != "[put] ack":
+                    raise SystemExit(f"[flash] put stopped at {sent} bytes: {reply}")
+            if sent * 10 // len(data) != (sent - len(block)) * 10 // len(data):
+                print(f"\r[flash] {dest}: {sent * 100 // len(data)}%", end="", flush=True)
+        print()
+        reply = wait_line(("[put] done", "[put] FAILED"), 15.0)
+        dt = time.monotonic() - t0
+        if not reply.startswith("[put] done"):
+            raise SystemExit(f"[flash] {reply}")
+        log(f"{dest}: {len(data)} bytes in {dt:.1f}s ({len(data) / 1024 / max(dt, 0.01):.0f} KB/s)")
+
+
+def cmd_put(args) -> int:
+    if not args.dest.startswith("/"):
+        raise SystemExit("[flash] the destination is an absolute path on the SD card, e.g. /routes/x.gpx")
+    with open(args.file, "rb") as f:
+        put_bytes(f.read(), args.dest)
+    return 0
+
+
+def check_app_image(data: bytes, what: str) -> None:
+    """The checks the launcher makes, done before a slow upload rather than after."""
+    if len(data) < 64 or data[0] != 0xE9:
+        raise SystemExit(f"[flash] {what} is not an ESP app image")
+    if data[12] | data[13] << 8 != 9:
+        raise SystemExit(f"[flash] {what} was built for another chip (not an ESP32-S3)")
+    if data[23] == 1 and hashlib.sha256(data[:-32]).digest() != data[-32:]:
+        raise SystemExit(f"[flash] {what}: its appended SHA-256 does not match (truncated?)")
+
+
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug[:23] or "app"
+
+
+def install(app_id: str, slot: str | None, confirm: bool, stay: bool, follow_s: float,
+            port: str | None = None) -> int:
+    port = port or console_port()
+    line = f"install {app_id}" + (f" {slot}" if slot else "") + (" confirm" if confirm else "") + \
+        (" stay" if stay else "")
+    refusals = ("FAILED", "add `confirm`", "[install] no app", "is not an OTA slot", "[install] install <id>")
+    done = ("not starting", "is already in") if stay else ("[launcher] booting",)
+    out = console(line, 600.0, port=port, stop=done + refusals)
+    if "add `confirm`" in out:
+        log("not installed: re-run with --confirm to replace that app")
+        return 1
+    if any(r in out for r in refusals) or not any(d in out for d in done):
+        return 1
+    if not stay and follow_s > 0:
+        follow(follow_s, after_port=port)
+    return 0
+
+
+def cmd_sdapp(args) -> int:
+    with open(args.firmware, "rb") as f:
+        data = f.read()
+    check_app_image(data, args.firmware)
+    slot = app_slot(args.slot) if args.slot else app_slot("ota_1")
+    if slot["name"] == "factory":
+        raise SystemExit("[flash] SD apps go into an OTA slot")
+    if len(data) > slot["size"]:
+        raise SystemExit(f"[flash] {len(data)} bytes do not fit {slot['name']} ({slot['size']} bytes)")
+    app_id = args.id or slugify(args.name)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,23}", app_id):
+        raise SystemExit(f"[flash] app id {app_id!r}: up to 23 of A-Z a-z 0-9 . _ -")
+    manifest = (
+        "# SD app for t5s3-launcher (docs/boot-flow.md). Hand-editable; only name is required.\n"
+        f"name    = {args.name}\n"
+        f"version = {args.version or ''}\n"
+        f"slot    = {slot['name']}\n"
+        f"sha256  = {hashlib.sha256(data).hexdigest()}\n"
+    )
+    port = console_port()
+    # The image first, the manifest last: the manifest's sha256 then always
+    # describes the image that is on the card, even after an interrupted copy.
+    put_bytes(data, f"/apps/{app_id}/firmware.bin", port)
+    put_bytes(manifest.encode(), f"/apps/{app_id}/app.ini", port)
+    log(f"/apps/{app_id} is on the SD card ({len(data)} bytes)")
+    if args.install:
+        # No slot override: an app already in either slot is just started.
+        return install(app_id, None, args.confirm, False, args.follow, port)
+    return 0
+
+
+def cmd_install(args) -> int:
+    return install(args.id, args.slot, args.confirm, args.stay, args.follow)
+
+
 # --- screenshot -------------------------------------------------------------
 # The firmwares' `screenshot` command prints the framebuffer as base64 between
 # two markers; the encoding is documented in launcher_api/launcher_api.h. Four
@@ -604,6 +739,33 @@ def main(argv=None) -> int:
     s.add_argument("out", nargs="?", default="screenshot.png", help="output PNG (default screenshot.png)")
     s.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the dump (default 60)")
     s.set_defaults(fn=cmd_screenshot)
+
+    s = sub.add_parser("put", help="copy a file onto the SD card of the launcher or OpenTrailPaper")
+    s.add_argument("file", help="file on this computer")
+    s.add_argument("dest", help="absolute path on the SD card, e.g. /routes/loop.gpx")
+    s.set_defaults(fn=cmd_put)
+
+    s = sub.add_parser("sdapp", help="put an app image into the launcher's SD store (/apps/<id>/)")
+    s.add_argument("firmware", help="path to the app's firmware.bin")
+    s.add_argument("--name", required=True, help="display name in the menu")
+    s.add_argument("--version", help="version string")
+    s.add_argument("--id", help="directory under /apps (default: the name, slugified)")
+    s.add_argument("--slot", help="preferred slot when it is not installed (default ota_1)")
+    s.add_argument("--install", action="store_true", help="install it and start it right away")
+    s.add_argument("--confirm", action="store_true",
+                   help="with --install: allow replacing ota_0 or an app that is not on the SD card")
+    s.add_argument("--follow", type=float, default=30.0, metavar="SEC",
+                   help="with --install: stream the app's console for SEC seconds (default 30)")
+    s.set_defaults(fn=cmd_sdapp)
+
+    s = sub.add_parser("install", help="install an SD app (already on the card) into a slot and start it")
+    s.add_argument("id", help="directory name under /apps (see `cmd apps`)")
+    s.add_argument("--slot", help="override the manifest's slot")
+    s.add_argument("--confirm", action="store_true", help="allow replacing ota_0 or an app not on the card")
+    s.add_argument("--stay", action="store_true", help="install only; do not start it")
+    s.add_argument("--follow", type=float, default=30.0, metavar="SEC",
+                   help="stream the app's console for SEC seconds after it starts (default 30)")
+    s.set_defaults(fn=cmd_install)
 
     sub.add_parser("monitor", help="serial monitor").set_defaults(fn=cmd_monitor)
 

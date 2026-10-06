@@ -10,9 +10,14 @@ Follow the runbook in CLAUDE.md, section "Task: install an app". In short:
 1. `tools/flash.py ports` — stop and ask for the cable if nothing shows up.
 2. Get a `firmware.bin`: build the project if given one (`pio run`, note the env).
    For OpenTrailPaper: `cd apps/opentrailpaper && pio run -e t5s3-launcher`.
-3. Choose the slot with the user's intent in mind: `ota_0` = OpenTrailPaper,
-   `ota_1` = second app (warn once that OpenTrailPaper's self-update can evict it).
-4. `tools/flash.py app <slot> <bin> --name "<Name>" --version <ver> --boot`
+3. Choose resident or SD. OpenTrailPaper and the one app the user lives in can be
+   resident: `ota_0` = OpenTrailPaper, `ota_1` = second app (warn once that
+   OpenTrailPaper's self-update can evict it). Anything else is an SD app:
+   `tools/flash.py sdapp <bin> --name "<Name>" --version <ver> --install`.
+   It goes into `ota_1` by default, and re-installs from the card in seconds
+   whenever the user picks it. It refuses to replace `ota_0`, or an app that is
+   not on the card, without `--confirm`. Ask the user before adding that flag.
+4. Resident: `tools/flash.py app <slot> <bin> --name "<Name>" --version <ver> --boot`
 5. Verify from the output: `[launcher] registered`, `[launcher] booting`, then the
    app's boot log streams for 30 s. Report errors or watchdog/panic lines; for
    OpenTrailPaper the healthy markers are `[rec] SD ready`, `[main] all tasks
